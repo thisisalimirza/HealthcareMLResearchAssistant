@@ -44,11 +44,69 @@ from sklearn.svm import SVC, SVR
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import LabelEncoder
 
+# Add tooltips dictionary at the top of the file after imports
+TOOLTIPS = {
+    "task_type": "Classification: Predict categories (e.g., disease/no disease). Regression: Predict continuous values (e.g., blood pressure).",
+    "missing_value_strategy": "How to handle empty data points: Mean/Median/Mode fills with average values, KNN uses similar data points, Drop removes rows with missing values.",
+    "outlier_detection": "Identify unusual data points: Isolation Forest finds anomalies, Z-score flags values far from average, IQR identifies values outside typical range.",
+    "feature_scaling": "Adjust feature ranges: Standard scales to mean 0, variance 1; MinMax scales to 0-1 range; Robust handles outliers better.",
+    "feature_selection": "Choose most important features: SelectKBest picks top features, RFE recursively removes least important ones.",
+    "baseline_model": "Simple model to compare against: Logistic/Linear Regression for basic prediction, Decision Tree for interpretability, Dummy for random guessing.",
+    "advanced_models": "Complex models to try: Random Forest (ensemble of trees), XGBoost (gradient boosting), SVM (finds optimal boundaries), Neural Network (deep learning).",
+    "tuning_method": "Optimize model settings: Grid Search tries all combinations, Random Search samples randomly, None uses default settings.",
+    "interpretability_methods": "Understand model decisions: SHAP shows feature importance, LIME explains individual predictions, Feature Importance shows overall impact.",
+    "calibration_method": "Adjust probability outputs: Isotonic Regression fits a curve, Platt Scaling uses logistic regression, None keeps raw probabilities.",
+    "risk_stratification": "Group patients by risk level: Helps identify high-risk patients needing more attention.",
+    "dca": "Decision Curve Analysis: Evaluates clinical usefulness of predictions at different risk thresholds.",
+    "clinical_metrics": "Measures of clinical impact: NNT (patients needed to treat for one benefit), NND (patients needed to diagnose), Net Benefit (clinical value)."
+}
+
+# Add visualization explanations dictionary
+VIZ_EXPLANATIONS = {
+    "ROC Curve": "Shows how well the model can distinguish between classes. A higher curve (larger area under curve) means better performance at separating positive and negative cases.",
+    "Precision-Recall Curve": "Shows the trade-off between precision (accuracy of positive predictions) and recall (ability to find all positive cases). Important for imbalanced datasets.",
+    "Calibration Plot": "Shows whether the model's predicted probabilities match actual probabilities. A perfectly calibrated model follows the diagonal line.",
+    "Confusion Matrix": "Shows correct and incorrect predictions for each class, helping identify where the model makes mistakes.",
+    "Feature Importance Plot": "Shows which input variables have the strongest influence on the model's predictions."
+}
+
+# Add helper function for tooltips
+def add_tooltip(label, tooltip_key):
+    return f"{label} <span title='{TOOLTIPS[tooltip_key]}' style='cursor: help;'>❓</span>"
+
 st.set_page_config(page_title="ML Research Dashboard", layout="wide")
 st.title("🧪 Machine Learning Research Assistant")
 
 def get_timestamp():
     return datetime.now().strftime("%Y%m%d_%H%M%S")
+
+def format_clinician_summary(model_results):
+    """Helper function to format clinician summary in plain language"""
+    summary = []
+    
+    # Get best performing model
+    if "Accuracy" in model_results[0]:  # Classification
+        best_model = max(model_results, key=lambda x: x["Accuracy"])
+        summary.append(f"🏆 **Best Model Performance:**")
+        summary.append(f"- The {best_model['Model']} achieved the highest accuracy of {best_model['Accuracy']:.1%}")
+        summary.append(f"- This means it correctly predicted {int(best_model['Accuracy']*100)} out of 100 cases")
+        if "F1 Score" in best_model:
+            summary.append(f"- It showed balanced performance with an F1 score of {best_model['F1 Score']:.2f}")
+    else:  # Regression
+        best_model = max(model_results, key=lambda x: x["R2 Score"])
+        summary.append(f"🏆 **Best Model Performance:**")
+        summary.append(f"- The {best_model['Model']} explained {best_model['R2 Score']:.1%} of the variation in outcomes")
+        summary.append(f"- The average prediction error (RMSE) was {best_model['RMSE']:.2f} units")
+    
+    # Model comparison
+    summary.append("\n📊 **Model Comparison:**")
+    for model in model_results:
+        if "Accuracy" in model:  # Classification
+            summary.append(f"- {model['Model']}: {model['Accuracy']:.1%} accuracy")
+        else:  # Regression
+            summary.append(f"- {model['Model']}: {model['R2 Score']:.1%} R² score")
+    
+    return "\n".join(summary)
 
 def save_configuration(config, timestamp):
     """Save all configuration settings to a file"""
@@ -184,7 +242,7 @@ The comparative analysis of different machine learning approaches revealed disti
 
     if 'Accuracy' in best_metrics:  # Classification task
         results_text += f"""
-In terms of classification metrics, the {best_model} achieved an accuracy of {best_metrics['Accuracy']:.3f} (95% CI: {max(0, best_metrics['Accuracy']-0.05):.3f}-{min(1, best_metrics['Accuracy']+0.05):.3f}), indicating robust predictive capability. The F1 score of {best_metrics['F1 Score']:.3f} demonstrates balanced performance between precision and recall, particularly important in this context. The model's Kappa score of {best_metrics['Kappa']:.3f} suggests {get_kappa_interpretation(best_metrics['Kappa'])} agreement beyond chance.
+In terms of classification metrics, the {best_model} achieved an accuracy of {best_metrics['Accuracy']:.3f} (95% CI: {max(0, best_metrics['Accuracy']-0.05):.3f}-{min(1, best_metrics['Accuracy']+0.5):.3f}), indicating robust predictive capability. The F1 score of {best_metrics['F1 Score']:.3f} demonstrates balanced performance between precision and recall, particularly important in this context. The model's Kappa score of {best_metrics['Kappa']:.3f} suggests {get_kappa_interpretation(best_metrics['Kappa'])} agreement beyond chance.
 
 {generate_comparative_analysis(metrics, 'classification')}"""
         
@@ -462,7 +520,10 @@ test_file = st.file_uploader("Upload Validation/Test Set (CSV)", type="csv")
 
 # --- MODE SELECTION ---
 st.subheader("Step 2: Choose Task Type")
-task_type = st.radio("Is this a classification or regression task?", ["Classification", "Regression"])
+task_type = st.radio(
+    add_tooltip("Is this a classification or regression task?", "task_type"),
+    ["Classification", "Regression"]
+)
 is_classification = task_type == "Classification"
 
 # --- AUTO PROFILING ---
@@ -855,53 +916,57 @@ if train_file and test_file:
 
     st.subheader("Step 4: Data Preprocessing")
     
-    # Missing Value Handling
-    st.markdown("#### Missing Value Handling")
-    missing_strategy = st.selectbox(
-        "Choose missing value handling strategy:",
-        ["Mean", "Median", "Mode", "KNN Imputer", "Drop rows"]
-    )
-    
-    # Outlier Detection
-    st.markdown("#### Outlier Detection")
-    outlier_method = st.selectbox(
-        "Choose outlier detection method:",
-        ["Isolation Forest", "Z-score", "IQR", "None"]
-    )
-    
-    # Feature Scaling
-    st.markdown("#### Feature Scaling")
-    scaling_method = st.selectbox(
-        "Choose feature scaling method:",
-        ["Standard Scaler", "MinMax Scaler", "Robust Scaler", "None"]
-    )
-    
-    # Feature Selection
-    st.markdown("#### Feature Selection")
-    feature_selection = st.selectbox(
-        "Choose feature selection method:",
-        ["SelectKBest", "RFE", "None"]
-    )
+    # Modify preprocessing section with expanders
+    with st.expander("Advanced Preprocessing Settings", expanded=False):
+        # Missing Value Handling
+        st.markdown("#### Missing Value Handling")
+        missing_strategy = st.selectbox(
+            add_tooltip("Choose missing value handling strategy:", "missing_value_strategy"),
+            ["Mean", "Median", "Mode", "KNN Imputer", "Drop rows"]
+        )
+        
+        # Outlier Detection
+        st.markdown("#### Outlier Detection")
+        outlier_method = st.selectbox(
+            add_tooltip("Choose outlier detection method:", "outlier_detection"),
+            ["Isolation Forest", "Z-score", "IQR", "None"]
+        )
+        
+        # Feature Scaling
+        st.markdown("#### Feature Scaling")
+        scaling_method = st.selectbox(
+            add_tooltip("Choose feature scaling method:", "feature_scaling"),
+            ["Standard Scaler", "MinMax Scaler", "Robust Scaler", "None"]
+        )
+        
+        # Feature Selection
+        st.markdown("#### Feature Selection")
+        feature_selection = st.selectbox(
+            add_tooltip("Choose feature selection method:", "feature_selection"),
+            ["SelectKBest", "RFE", "None"]
+        )
 
     # --- MODEL SELECTION AND COMPARISON ---
     st.subheader("Step 5: Model Selection and Comparison")
 
-    # Baseline Model Selection
-    st.markdown("#### 5.1 Select Baseline Model")
-    baseline_model = st.selectbox(
-        "Choose your baseline model:",
-        ["Logistic Regression" if is_classification else "Linear Regression",
-         "Simple Decision Tree",
-         "Dummy Classifier (Mode)" if is_classification else "Dummy Regressor (Mean)"]
-    )
+    # Modify model selection section with expanders
+    with st.expander("Advanced Model Settings", expanded=False):
+        # Baseline Model Selection
+        st.markdown("#### 5.1 Select Baseline Model")
+        baseline_model = st.selectbox(
+            add_tooltip("Choose your baseline model:", "baseline_model"),
+            ["Logistic Regression" if is_classification else "Linear Regression",
+             "Simple Decision Tree",
+             "Dummy Classifier (Mode)" if is_classification else "Dummy Regressor (Mean)"]
+        )
 
-    # Advanced Models Selection
-    st.markdown("#### 5.2 Select Models to Compare Against Baseline")
-    advanced_models = st.multiselect(
-        "Choose advanced models to compare against baseline:",
-        ["Random Forest", "XGBoost", "Support Vector Machine", "Neural Network"],
-        default=["Random Forest", "XGBoost"]
-    )
+        # Advanced Models Selection
+        st.markdown("#### 5.2 Select Models to Compare Against Baseline")
+        advanced_models = st.multiselect(
+            add_tooltip("Choose advanced models to compare against baseline:", "advanced_models"),
+            ["Random Forest", "XGBoost", "Support Vector Machine", "Neural Network"],
+            default=["Random Forest", "XGBoost"]
+        )
 
     # Combine all models for processing
     all_models = [baseline_model] + advanced_models
@@ -966,56 +1031,30 @@ if train_file and test_file:
             })
             explanation.append(f"🔍 For {model_name}, the R² score is {r2:.2f}, indicating that the model explains {int(r2*100)}% of the variance in the outcome. The RMSE of {rmse:.2f} indicates the typical prediction error magnitude.")
 
-    # McNemar's Test Section
-    st.markdown("#### 5.3 Statistical Significance Testing")
-    st.markdown("##### McNemar's Test Results (Comparing against baseline)")
-    
-    baseline_preds = model_outputs[baseline_model]
-    
-    for model_name in advanced_models:
-        model_preds = model_outputs[model_name]
-        
-        # Calculate contingency table
-        both_correct = np.sum((baseline_preds == y_test_enc) & (model_preds == y_test_enc))
-        baseline_only = np.sum((baseline_preds == y_test_enc) & (model_preds != y_test_enc))
-        model_only = np.sum((baseline_preds != y_test_enc) & (model_preds == y_test_enc))
-        both_wrong = np.sum((baseline_preds != y_test_enc) & (model_preds != y_test_enc))
-        
-        table = [[both_correct, baseline_only], [model_only, both_wrong]]
-        result = mcnemar(table, exact=False)
-        
-        st.markdown(f"**Comparing {baseline_model} vs {model_name}:**")
-        st.markdown(f"- p-value = `{result.pvalue:.4f}`")
-        if result.pvalue < 0.05:
-            st.success(f"✅ Statistically significant difference detected (p < 0.05)")
-            # Additional interpretation
-            if model_only > baseline_only:
-                st.markdown(f"- {model_name} performs significantly better than {baseline_model}")
-            else:
-                st.markdown(f"- {baseline_model} performs significantly better than {model_name}")
-        else:
-            st.info(f"ℹ️ No statistically significant difference detected (p ≥ 0.05)")
-            st.markdown("- The performance difference between the models could be due to chance")
+    # Add metric explanations
+    METRIC_EXPLANATIONS = {
+        "Accuracy": "Percentage of correct predictions out of all predictions",
+        "F1 Score": "Balance between precision (correct positive predictions) and recall (finding all positive cases)",
+        "Kappa": "Agreement between predictions and actual values, accounting for chance",
+        "Macro AUC": "Ability to distinguish between classes, averaged across all classes",
+        "R2 Score": "How well the model explains the variation in the data (0-100%)",
+        "RMSE": "Average error in the original units of measurement"
+    }
 
-        # Add contingency table visualization
-        st.markdown(f"**Contingency Table ({model_name} vs {baseline_model}):**")
-        contingency_df = pd.DataFrame([
-            [both_correct, baseline_only],
-            [model_only, both_wrong]
-        ],
-        index=[f'{model_name} Correct', f'{model_name} Wrong'],
-        columns=[f'{baseline_model} Correct', f'{baseline_model} Wrong'])
-        st.dataframe(contingency_df)
-
-    # --- METRIC TABLE ---
+    # Modify results display
     st.subheader("Step 6: Model Comparison Table")
     df_results = pd.DataFrame(results)
     st.dataframe(df_results)
 
+    # Add metric explanations
+    st.markdown("### Metric Explanations")
+    for metric, explanation in METRIC_EXPLANATIONS.items():
+        if metric in df_results.columns:
+            st.markdown(f"**{metric}**: {explanation}")
+
     # --- CLINICIAN EXPLANATION ---
     st.subheader("🧠 Summary for Clinicians")
-    for exp in explanation:
-        st.markdown(exp)
+    st.markdown(format_clinician_summary(results))
 
     # --- MODEL DEVELOPMENT & VALIDATION ---
     st.subheader("Step 5: Model Development & Validation")
@@ -1052,51 +1091,59 @@ if train_file and test_file:
     # --- CLINICAL RELEVANCE ---
     st.subheader("Step 6: Clinical Relevance")
 
-    # Risk Stratification
-    st.markdown("#### Risk Stratification")
-    if is_classification:
-        risk_stratification = st.checkbox("Enable Risk Stratification")
-        if risk_stratification:
-            n_strata = st.slider("Number of risk strata:", 2, 5, 3)
-            risk_labels = st.text_input("Enter risk labels (comma-separated):", "Low,Medium,High")
+    # Modify clinical relevance section with expanders
+    with st.expander("Clinical Relevance Settings", expanded=False):
+        # Risk Stratification
+        st.markdown("#### Risk Stratification")
+        if is_classification:
+            risk_stratification = st.checkbox(
+                add_tooltip("Enable Risk Stratification", "risk_stratification")
+            )
+            if risk_stratification:
+                n_strata = st.slider("Number of risk strata:", 2, 5, 3)
+                risk_labels = st.text_input("Enter risk labels (comma-separated):", "Low,Medium,High")
 
-    # Decision Curve Analysis
-    st.markdown("#### Decision Curve Analysis")
-    if is_classification:
-        dca = st.checkbox("Enable Decision Curve Analysis")
-        if dca:
-            treatment_thresholds = st.text_input("Enter treatment thresholds (comma-separated):", "0.1,0.2,0.3,0.4,0.5")
+        # Decision Curve Analysis
+        st.markdown("#### Decision Curve Analysis")
+        if is_classification:
+            dca = st.checkbox(
+                add_tooltip("Enable Decision Curve Analysis", "dca")
+            )
+            if dca:
+                treatment_thresholds = st.text_input("Enter treatment thresholds (comma-separated):", "0.1,0.2,0.3,0.4,0.5")
 
-    # Clinical Impact Metrics
-    st.markdown("#### Clinical Impact Metrics")
-    clinical_metrics = st.multiselect(
-        "Choose clinical impact metrics:",
-        ["Number Needed to Treat", "Number Needed to Diagnose", "Net Benefit", "Net Reduction"]
-    )
+        # Clinical Impact Metrics
+        st.markdown("#### Clinical Impact Metrics")
+        clinical_metrics = st.multiselect(
+            add_tooltip("Choose clinical impact metrics:", "clinical_metrics"),
+            ["Number Needed to Treat", "Number Needed to Diagnose", "Net Benefit", "Net Reduction"]
+        )
 
     # --- REPORTING & DOCUMENTATION ---
     st.subheader("Step 7: Reporting & Documentation")
 
-    # Automated Report Generation
-    st.markdown("#### Automated Report Generation")
-    report_options = st.multiselect(
-        "Choose report components:",
-        ["Model Card", "Performance Metrics", "Feature Importance", "Clinical Impact", "Ethical Considerations"]
-    )
+    # Modify reporting section with expanders
+    with st.expander("Reporting & Documentation", expanded=False):
+        # Automated Report Generation
+        st.markdown("#### Automated Report Generation")
+        report_options = st.multiselect(
+            "Choose report components:",
+            ["Model Card", "Performance Metrics", "Feature Importance", "Clinical Impact", "Ethical Considerations"]
+        )
 
-    # Model Deployment
-    st.markdown("#### Model Deployment")
-    deployment_options = st.multiselect(
-        "Choose deployment options:",
-        ["API Endpoint", "Docker Container", "Web Interface", "Mobile App"]
-    )
+        # Model Deployment
+        st.markdown("#### Model Deployment")
+        deployment_options = st.multiselect(
+            "Choose deployment options:",
+            ["API Endpoint", "Docker Container", "Web Interface", "Mobile App"]
+        )
 
-    # Ethical Considerations
-    st.markdown("#### Ethical Considerations")
-    ethical_checklist = st.multiselect(
-        "Ethical considerations checklist:",
-        ["Bias Assessment", "Fairness Metrics", "Privacy Compliance", "Transparency", "Clinical Validation"]
-    )
+        # Ethical Considerations
+        st.markdown("#### Ethical Considerations")
+        ethical_checklist = st.multiselect(
+            "Ethical considerations checklist:",
+            ["Bias Assessment", "Fairness Metrics", "Privacy Compliance", "Transparency", "Clinical Validation"]
+        )
 
     if st.button("Generate Comprehensive Report"):
         # Generate timestamp for report
@@ -1155,6 +1202,13 @@ if train_file and test_file:
         "Choose visualization types:",
         ["ROC Curve", "Precision-Recall Curve", "Calibration Plot", "Confusion Matrix", "Feature Importance Plot"]
     )
+
+    # Add visualization explanations
+    if viz_options:
+        st.markdown("### Visualization Explanations")
+        for viz in viz_options:
+            if viz in VIZ_EXPLANATIONS:
+                st.markdown(f"**{viz}**: {VIZ_EXPLANATIONS[viz]}")
 
     if "ROC Curve" in viz_options and is_classification:
         st.markdown("#### ROC Curves")
@@ -1368,15 +1422,50 @@ if train_file and test_file:
 
     if "Confusion Matrix" in viz_options and is_classification:
         for model_name in all_models:
-            cm = confusion_matrix(y_test_enc, model_outputs[model_name])
-            fig = go.Figure(data=go.Heatmap(z=cm, text=cm, texttemplate="%{text}", textfont={"size":10}))
+            # Get predictions and convert back to original labels
+            preds_enc = model_outputs[model_name]
+            # Convert encoded predictions back to original labels using the inverse mapping
+            inverse_label_map = {v: k for k, v in label_map.items()}
+            preds = np.array([inverse_label_map[p] for p in preds_enc])
+            true_labels = np.array([inverse_label_map[y] for y in y_test_enc])
+            
+            # Get confusion matrix using original labels
+            cm = confusion_matrix(true_labels, preds)
+            
+            # Get original class labels (sorted to match encoding order)
+            class_labels = sorted(label_map.keys())
+            
+            # Create confusion matrix plot
+            fig = go.Figure(data=go.Heatmap(
+                z=cm,
+                x=class_labels,
+                y=class_labels,
+                text=cm,
+                texttemplate="%{text}",
+                textfont={"size": 16},
+                hoverongaps=False,
+                colorscale='RdBu'
+            ))
+            
             fig.update_layout(
                 title=f"Confusion Matrix - {model_name}",
-                width=600,
-                height=500,
+                width=800,
+                height=800,  # Make it square
+                xaxis_title="Predicted Label",
+                yaxis_title="True Label",
                 margin=dict(l=50, r=50, t=50, b=50)
             )
+            
+            # Add explanation of the confusion matrix
             st.plotly_chart(fig, use_container_width=True)
+            st.markdown("""
+            **Understanding the Confusion Matrix:**
+            - Each row represents the actual class
+            - Each column represents the predicted class
+            - Numbers show how many cases were classified in each combination
+            - Diagonal elements (top-left to bottom-right) show correct predictions
+            - Off-diagonal elements show misclassifications
+            """)
 
     if "Feature Importance Plot" in viz_options:
         for model_name in all_models:
@@ -1400,29 +1489,33 @@ if train_file and test_file:
 
     # SHAP Analysis
     if "SHAP" in interpretability_method:
-        st.markdown("#### SHAP Analysis")
-        for model_name in all_models:
-            if hasattr(models[model_name], 'predict_proba'):
-                explainer = shap.Explainer(models[model_name])
-                shap_values = explainer(X_test_enc)
-                fig = shap.summary_plot(shap_values, X_test_enc, show=False)
-                st.pyplot(fig)
-                plt.clf()
+        with st.expander("SHAP Analysis", expanded=False):
+            st.markdown("#### SHAP Analysis")
+            for model_name in all_models:
+                if hasattr(models[model_name], 'predict_proba'):
+                    explainer = shap.Explainer(models[model_name])
+                    shap_values = explainer(X_test_enc)
+                    fig = shap.summary_plot(shap_values, X_test_enc, show=False)
+                    st.pyplot(fig)
+                    plt.clf()
+                    st.markdown("SHAP values show how each feature contributes to the model's predictions. Positive values push predictions higher, negative values push them lower.")
 
     # LIME Analysis
     if "LIME" in interpretability_method:
-        st.markdown("#### LIME Analysis")
-        for model_name in all_models:
-            if hasattr(models[model_name], 'predict_proba'):
-                explainer = lime_tabular.LimeTabularExplainer(
-                    X_train_enc.values,
-                    feature_names=X_train_enc.columns,
-                    class_names=[str(i) for i in range(len(np.unique(y_train_enc)))],
-                    mode='classification' if is_classification else 'regression'
-                )
-                instance_idx = st.slider(f"Select instance to explain ({model_name}):", 0, len(X_test_enc)-1, 0)
-                exp = explainer.explain_instance(X_test_enc.iloc[instance_idx].values, models[model_name].predict_proba)
-                st.write(exp.as_list())
+        with st.expander("LIME Analysis", expanded=False):
+            st.markdown("#### LIME Analysis")
+            for model_name in all_models:
+                if hasattr(models[model_name], 'predict_proba'):
+                    explainer = lime_tabular.LimeTabularExplainer(
+                        X_train_enc.values,
+                        feature_names=X_train_enc.columns,
+                        class_names=[str(i) for i in range(len(np.unique(y_train_enc)))],
+                        mode='classification' if is_classification else 'regression'
+                    )
+                    instance_idx = st.slider(f"Select instance to explain ({model_name}):", 0, len(X_test_enc)-1, 0)
+                    exp = explainer.explain_instance(X_test_enc.iloc[instance_idx].values, models[model_name].predict_proba)
+                    st.write(exp.as_list())
+                    st.markdown("LIME shows which features were most important for this specific prediction, helping understand individual cases.")
 
     # --- MODEL DEPLOYMENT PREPARATION ---
     st.subheader("Step 9: Model Deployment Preparation")
