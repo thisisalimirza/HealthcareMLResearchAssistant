@@ -796,25 +796,35 @@ if train_file and test_file:
 
             # Scale continuous features
             if 'continuous_scaling' in preprocessing_options and preprocessing_options['continuous_scaling'] != "None":
+                # Initialize scaler dictionaries if they don't exist
+                if not hasattr(preprocess_data, 'scalers'):
+                    preprocess_data.scalers = {}
+                
                 for col in cont_features:
+                    # Create a unique key for each column and scaling method
+                    scaler_key = f"{preprocessing_options['continuous_scaling']}_{col}"
+                    
                     if preprocessing_options['continuous_scaling'] == "Standard Scaling":
                         if is_train:
-                            scaler = StandardScaler()
-                            df_processed[col] = scaler.fit_transform(df_processed[[col]])
+                            preprocess_data.scalers[scaler_key] = StandardScaler()
+                            df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(df_processed[[col]])
                         else:
-                            df_processed[col] = scaler.transform(df_processed[[col]])
+                            if scaler_key in preprocess_data.scalers:
+                                df_processed[col] = preprocess_data.scalers[scaler_key].transform(df_processed[[col]])
                     elif preprocessing_options['continuous_scaling'] == "Min-Max Scaling":
                         if is_train:
-                            scaler = MinMaxScaler()
-                            df_processed[col] = scaler.fit_transform(df_processed[[col]])
+                            preprocess_data.scalers[scaler_key] = MinMaxScaler()
+                            df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(df_processed[[col]])
                         else:
-                            df_processed[col] = scaler.transform(df_processed[[col]])
+                            if scaler_key in preprocess_data.scalers:
+                                df_processed[col] = preprocess_data.scalers[scaler_key].transform(df_processed[[col]])
                     elif preprocessing_options['continuous_scaling'] == "Robust Scaling":
                         if is_train:
-                            scaler = RobustScaler()
-                            df_processed[col] = scaler.fit_transform(df_processed[[col]])
+                            preprocess_data.scalers[scaler_key] = RobustScaler()
+                            df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(df_processed[[col]])
                         else:
-                            df_processed[col] = scaler.transform(df_processed[[col]])
+                            if scaler_key in preprocess_data.scalers:
+                                df_processed[col] = preprocess_data.scalers[scaler_key].transform(df_processed[[col]])
 
             # Handle categorical features
             if 'categorical_encoding' in preprocessing_options:
