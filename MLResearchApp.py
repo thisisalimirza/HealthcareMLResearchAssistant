@@ -74,6 +74,19 @@ VIZ_EXPLANATIONS = {
 def add_tooltip(label, tooltip_key):
     return f"{label} <span title='{TOOLTIPS[tooltip_key]}' style='cursor: help;'>❓</span>"
 
+# Add new function here
+def get_accurate_unique_count(series):
+    """Get accurate unique value count regardless of data type"""
+    try:
+        # Convert to string first to handle all types
+        return series.astype(str).nunique()
+    except:
+        # Fallback to standard nunique if conversion fails
+        try:
+            return series.nunique()
+        except:
+            return 0
+
 st.set_page_config(page_title="ML Research Dashboard", layout="wide")
 st.title("🧪 Machine Learning Research Assistant")
 
@@ -1851,16 +1864,3 @@ if train_file and test_file:
             st.error("Detailed error: " + str(e.__class__) + ": " + str(e))
             import traceback
             st.error("Traceback: " + traceback.format_exc())
-
-# Add this helper function at the top with other helper functions
-def get_accurate_unique_count(series):
-    """Get accurate unique value count regardless of data type"""
-    try:
-        # Convert to string first to handle all types
-        return series.astype(str).nunique()
-    except:
-        # Fallback to standard nunique if conversion fails
-        try:
-            return series.nunique()
-        except:
-            return 0
