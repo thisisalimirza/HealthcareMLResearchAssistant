@@ -1128,26 +1128,45 @@ if train_file and test_file:
         try:
             # Ensure data types are consistent before fitting
             X_train_safe = X_train_enc.copy()
+            X_test_safe = X_test_enc.copy()
+            
+            # Handle missing values - a critical step for models like LinearRegression 
+            # that don't accept NaN values natively
             for col in X_train_safe.columns:
+                # Convert non-numeric columns to numeric
                 if not pd.api.types.is_numeric_dtype(X_train_safe[col]):
                     X_train_safe[col] = pd.to_numeric(X_train_safe[col], errors='coerce')
-                    # Fill remaining NaNs with median
-                    X_train_safe[col] = X_train_safe[col].fillna(X_train_safe[col].median() if not X_train_safe[col].empty else 0)
-            
-            X_test_safe = X_test_enc.copy()
-            for col in X_test_safe.columns:
-                if not pd.api.types.is_numeric_dtype(X_test_safe[col]):
                     X_test_safe[col] = pd.to_numeric(X_test_safe[col], errors='coerce')
-                    # Fill remaining NaNs with median
-                    X_test_safe[col] = X_test_safe[col].fillna(X_test_safe[col].median() if not X_test_safe[col].empty else 0)
+                
+                # Fill missing values with median (a robust approach)
+                median_val = X_train_safe[col].median()
+                if pd.isna(median_val):  # If median itself is NaN, use 0
+                    median_val = 0
+                X_train_safe[col] = X_train_safe[col].fillna(median_val)
+                X_test_safe[col] = X_test_safe[col].fillna(median_val)
+            
+            # Double-check that there are no remaining NaN values
+            if X_train_safe.isna().any().any() or X_test_safe.isna().any().any():
+                st.warning(f"⚠️ Some missing values couldn't be imputed for {model_name}. Using 0 for remaining NaNs.")
+                X_train_safe = X_train_safe.fillna(0)
+                X_test_safe = X_test_safe.fillna(0)
             
             # Ensure target is proper type
             if is_classification:
                 y_train_safe = y_train_enc.astype(int)
                 y_test_safe = y_test_enc.astype(int)
             else:
-                y_train_safe = pd.to_numeric(y_train_enc, errors='coerce').fillna(y_train_enc.median())
-                y_test_safe = pd.to_numeric(y_test_enc, errors='coerce').fillna(y_test_enc.median())
+                y_train_safe = pd.to_numeric(y_train_enc, errors='coerce')
+                # Handle missing values in target for regression
+                if y_train_safe.isna().any():
+                    y_median = y_train_safe.median()
+                    if pd.isna(y_median):  # If median is NaN, use mean or 0
+                        y_median = y_train_safe.mean() if not pd.isna(y_train_safe.mean()) else 0
+                    y_train_safe = y_train_safe.fillna(y_median)
+                
+                y_test_safe = pd.to_numeric(y_test_enc, errors='coerce')
+                if y_test_safe.isna().any():
+                    y_test_safe = y_test_safe.fillna(y_train_safe.median() if not pd.isna(y_train_safe.median()) else 0)
             
             # Fit model with robust error handling
             model.fit(X_train_safe, y_train_safe)
