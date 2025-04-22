@@ -637,19 +637,36 @@ if train_file and test_file:
         column_types = {}
         
         for col in df_train.columns:
-            # Get sample of non-null values
-            sample_values = df_train[col].dropna().head(5).tolist()
-            unique_count = df_train[col].nunique()
+            # Get sample of non-null values as strings to ensure display
+            sample_values = [str(x) for x in df_train[col].dropna().head(5).tolist()]
+            
+            # Get accurate unique count regardless of data type
+            unique_count = get_accurate_unique_count(df_train[col])
+            
             missing_count = df_train[col].isnull().sum()
             
-            # Auto-detect type
+            # Auto-detect type with more robust logic
             if pd.api.types.is_numeric_dtype(df_train[col]):
-                if unique_count <= 10:
+                # Check if it's actually numeric or just appears numeric
+                # Try converting strings to numeric to see if it works
+                try:
+                    pd.to_numeric(df_train[col])
+                    is_true_numeric = True
+                except:
+                    is_true_numeric = False
+                    
+                if is_true_numeric and unique_count <= 10:
                     suggested_type = "Categorical (Numeric)"
-                else:
+                elif is_true_numeric:
                     suggested_type = "Continuous"
+                else:
+                    # It looked numeric but isn't truly numeric
+                    if unique_count <= 15:
+                        suggested_type = "Categorical (String)"
+                    else:
+                        suggested_type = "Text"
             else:
-                if unique_count <= 10:
+                if unique_count <= 15:
                     suggested_type = "Categorical (String)"
                 else:
                     suggested_type = "Text"
@@ -734,7 +751,7 @@ if train_file and test_file:
                         # Show actual values from the column to help user decide
                         sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
                         st.write(f"Sample: {sample_values}")
-                        actual_unique = df_train[col].nunique()
+                        actual_unique = get_accurate_unique_count(df_train[col])
                         st.write(f"Unique values: {actual_unique}")
                     with col3:
                         # Allow selecting any type
@@ -775,7 +792,7 @@ if train_file and test_file:
                         # Show actual values from the column to help user decide
                         sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
                         st.write(f"Sample: {sample_values}")
-                        actual_unique = df_train[col].nunique()
+                        actual_unique = get_accurate_unique_count(df_train[col])
                         st.write(f"Unique values: {actual_unique}")
                     with col3:
                         # Allow selecting any type
@@ -816,7 +833,7 @@ if train_file and test_file:
                         # Show actual values from the column to help user decide
                         sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
                         st.write(f"Sample: {sample_values}")
-                        actual_unique = df_train[col].nunique()
+                        actual_unique = get_accurate_unique_count(df_train[col])
                         st.write(f"Unique values: {actual_unique}")
                     with col3:
                         # Allow selecting any type
@@ -1834,3 +1851,16 @@ if train_file and test_file:
             st.error("Detailed error: " + str(e.__class__) + ": " + str(e))
             import traceback
             st.error("Traceback: " + traceback.format_exc())
+
+# Add this helper function at the top with other helper functions
+def get_accurate_unique_count(series):
+    """Get accurate unique value count regardless of data type"""
+    try:
+        # Convert to string first to handle all types
+        return series.astype(str).nunique()
+    except:
+        # Fallback to standard nunique if conversion fails
+        try:
+            return series.nunique()
+        except:
+            return 0
