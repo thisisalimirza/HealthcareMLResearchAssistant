@@ -614,6 +614,19 @@ if train_file and test_file:
         df_train = pd.read_csv(train_file)
         df_test = pd.read_csv(test_file)
         
+        # Define the function locally to ensure it's available
+        def get_accurate_unique_count(series):
+            """Get accurate unique value count regardless of data type"""
+            try:
+                # Convert to string first to handle all types
+                return series.astype(str).nunique()
+            except:
+                # Fallback to standard nunique if conversion fails
+                try:
+                    return series.nunique()
+                except:
+                    return 0
+        
         # Auto-fix data types with clear messaging
         st.info("🔍 Automatically checking data types and fixing issues...")
         df_train, train_issues = auto_fix_data_types(df_train)
