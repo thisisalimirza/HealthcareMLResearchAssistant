@@ -630,121 +630,242 @@ if train_file and test_file:
             st.write("Test Set Shape:", df_test.shape)
             st.write("Missing Values:", df_train.isnull().sum().sum())
 
-        # Feature Type Detection and Selection
-        st.markdown("#### Feature Selection and Data Types")
-        feature_info = {}
+        # Improved Feature Type Detection and Selection
+        st.markdown("#### Guided Feature Selection")
+        
+        # Auto-detect column types
+        column_types = {}
         
         for col in df_train.columns:
             # Get sample of non-null values
-            sample_values = df_train[col].dropna().head(10).tolist()
+            sample_values = df_train[col].dropna().head(5).tolist()
+            unique_count = df_train[col].nunique()
+            missing_count = df_train[col].isnull().sum()
             
-            # More robust data type detection
-            try:
-                # Try converting to numeric
-                pd.to_numeric(df_train[col], errors='raise')
-                if df_train[col].nunique() <= 10:
-                    dtype = "Categorical (Numeric)"
+            # Auto-detect type
+            if pd.api.types.is_numeric_dtype(df_train[col]):
+                if unique_count <= 10:
+                    suggested_type = "Categorical (Numeric)"
                 else:
-                    dtype = "Continuous"
-            except (ValueError, TypeError):
-                # If conversion fails, it's either categorical or text
-                if df_train[col].nunique() <= 10:
-                    dtype = "Categorical (String)"
+                    suggested_type = "Continuous"
+            else:
+                if unique_count <= 10:
+                    suggested_type = "Categorical (String)"
                 else:
-                    # Check if it might be a mixed numeric/string column
-                    try:
-                        # Try converting non-special values to numeric
-                        numeric_values = pd.to_numeric(df_train[col].replace(['OOS', 'NA', 'N/A', 'NULL', ''], np.nan), errors='raise')
-                        dtype = "Mixed (Numeric/Categorical)"
-                    except (ValueError, TypeError):
-                        dtype = "Text"
+                    suggested_type = "Text"
             
-            # Store column information
-            feature_info[col] = {
-                "dtype": dtype,
-                "nunique": df_train[col].nunique(),
-                "missing": df_train[col].isnull().sum(),
-                "example_values": sample_values,
-                "special_values": [v for v in df_train[col].unique() if isinstance(v, str) and v.upper() in ['OOS', 'NA', 'N/A', 'NULL']]
+            column_types[col] = {
+                "name": col,
+                "unique_count": unique_count,
+                "missing_count": missing_count,
+                "sample_values": sample_values,
+                "suggested_type": suggested_type
             }
-
-        # Create feature selection interface
-        st.markdown("#### Select Features and Target")
         
-        # Target selection with type information
-        target_col1, target_col2 = st.columns([2, 1])
-        with target_col1:
-            target = st.selectbox(
-                "Choose the target column:",
-                df_train.columns,
-                format_func=lambda x: f"{x} ({feature_info[x]['dtype']})"
-            )
-        with target_col2:
-            st.write("Target Type:", feature_info[target]['dtype'])
-            st.write("Unique Values:", feature_info[target]['nunique'])
-
-        # Feature selection with type information and statistics
-        st.markdown("#### Select Input Features")
+        # Let user confirm and modify column types
+        st.write("Please confirm the type of each column in your dataset:")
         
-        # Group features by type
-        feature_types = {
+        # Use columns to display in a more compact way
+        col_types_confirmed = {}
+        cols_per_row = 2
+        
+        # Create groups of columns by type for better organization
+        column_groups = {
             "Continuous": [],
             "Categorical (Numeric)": [],
             "Categorical (String)": [],
-            "Mixed (Numeric/Categorical)": [],
             "Text": [],
-            "Other": []
+            "Target": []
         }
         
-        for col in df_train.columns:
-            if col != target:
-                feature_types[feature_info[col]['dtype']].append(col)
-
-        # Create feature selection by type
-        selected_features = []
+        # First, ask user to select target column
+        target_options = list(df_train.columns)
+        target = st.selectbox(
+            "Select your target column (what you want to predict):",
+            target_options,
+            format_func=lambda x: f"{x} ({column_types[x]['unique_count']} unique values, {column_types[x]['suggested_type']})"
+        )
         
-        for dtype, cols in feature_types.items():
-            if cols:  # Only show feature types that exist in the dataset
-                st.markdown(f"**{dtype} Features**")
+        # Suggest task type based on target column
+        suggested_task = "Classification" if column_types[target]['suggested_type'] in ["Categorical (Numeric)", "Categorical (String)"] else "Regression"
+        task_type = st.radio(
+            "What type of task is this?",
+            ["Classification", "Regression"],
+            index=0 if suggested_task == "Classification" else 1,
+            help="Classification predicts categories, Regression predicts continuous values"
+        )
+        
+        # Let user confirm target column type
+        target_type = st.radio(
+            f"Confirm the type of target column '{target}':",
+            ["Categorical", "Continuous"],
+            index=0 if column_types[target]['suggested_type'] in ["Categorical (Numeric)", "Categorical (String)"] else 1,
+            help="This affects how the model will be trained and evaluated"
+        )
+        
+        # Mark target as special type
+        column_types[target]["confirmed_type"] = "Target"
+        column_types[target]["target_type"] = target_type
+        column_groups["Target"].append(target)
+        
+        # For each feature, let user confirm or change its type
+        st.markdown("#### Feature Selection and Type Confirmation")
+        st.write("Select features to include and confirm their types:")
+        
+        # Create tabs for different column type categories
+        feature_tabs = st.tabs(["Numeric Features", "Categorical Features", "Text Features", "All Features"])
+        
+        numeric_cols = [col for col in df_train.columns if col != target and pd.api.types.is_numeric_dtype(df_train[col])]
+        categorical_cols = [col for col in df_train.columns if col != target and not pd.api.types.is_numeric_dtype(df_train[col]) and df_train[col].nunique() <= 15]
+        text_cols = [col for col in df_train.columns if col != target and not pd.api.types.is_numeric_dtype(df_train[col]) and df_train[col].nunique() > 15]
+        
+        with feature_tabs[0]:  # Numeric Features tab
+            if not numeric_cols:
+                st.info("No numeric features detected in your dataset.")
+            else:
+                st.write(f"Found {len(numeric_cols)} numeric features:")
+                num_selected = []
                 
-                # Create a dataframe with feature information for this type
-                feature_df = pd.DataFrame([
-                    {
-                        "Feature": col,
-                        "Unique Values": feature_info[col]['nunique'],
-                        "Missing Values": feature_info[col]['missing'],
-                        "Example Values": ", ".join(map(str, feature_info[col]['example_values'])),
-                        "Special Values": ", ".join(map(str, feature_info[col]['special_values'])) if feature_info[col]['special_values'] else "None"
-                    }
-                    for col in cols
-                ])
+                for col in numeric_cols:
+                    col1, col2, col3 = st.columns([3, 2, 3])
+                    with col1:
+                        include = st.checkbox(f"Include {col}", value=True)
+                    with col2:
+                        st.write(f"{column_types[col]['unique_count']} unique values")
+                    with col3:
+                        feat_type = st.selectbox(
+                            f"Type for {col}",
+                            ["Continuous", "Categorical (Numeric)"],
+                            index=0 if column_types[col]['suggested_type'] == "Continuous" else 1,
+                            key=f"type_{col}"
+                        )
+                    
+                    if include:
+                        num_selected.append(col)
+                        column_types[col]["confirmed_type"] = feat_type
+                        if feat_type == "Continuous":
+                            column_groups["Continuous"].append(col)
+                        else:
+                            column_groups["Categorical (Numeric)"].append(col)
                 
-                # Display feature information in an expander
-                with st.expander(f"View {dtype} Feature Details"):
-                    st.dataframe(feature_df)
-                    if any(feature_info[col]['special_values'] for col in cols):
-                        st.warning("⚠️ Some features contain special values (OOS, NA, etc.) that will be handled as missing values.")
+                st.success(f"Selected {len(num_selected)} numeric features")
+        
+        with feature_tabs[1]:  # Categorical Features tab
+            if not categorical_cols:
+                st.info("No categorical features detected in your dataset.")
+            else:
+                st.write(f"Found {len(categorical_cols)} categorical features:")
+                cat_selected = []
                 
-                # Multi-select for features of this type
-                selected = st.multiselect(
-                    f"Select {dtype} features to include:",
-                    cols,
-                    default=cols,
-                    format_func=lambda x: f"{x} ({feature_info[x]['nunique']} unique)"
-                )
-                selected_features.extend(selected)
-
+                for col in categorical_cols:
+                    col1, col2, col3 = st.columns([3, 2, 3])
+                    with col1:
+                        include = st.checkbox(f"Include {col}", value=True)
+                    with col2:
+                        st.write(f"{column_types[col]['unique_count']} unique values")
+                    with col3:
+                        feat_type = st.selectbox(
+                            f"Type for {col}",
+                            ["Categorical (String)"],
+                            index=0,
+                            key=f"type_{col}"
+                        )
+                    
+                    if include:
+                        cat_selected.append(col)
+                        column_types[col]["confirmed_type"] = feat_type
+                        column_groups["Categorical (String)"].append(col)
+                
+                st.success(f"Selected {len(cat_selected)} categorical features")
+        
+        with feature_tabs[2]:  # Text Features tab
+            if not text_cols:
+                st.info("No text features detected in your dataset.")
+            else:
+                st.write(f"Found {len(text_cols)} text features:")
+                text_selected = []
+                
+                for col in text_cols:
+                    col1, col2, col3 = st.columns([3, 2, 3])
+                    with col1:
+                        include = st.checkbox(f"Include {col}", value=True)
+                    with col2:
+                        st.write(f"{column_types[col]['unique_count']} unique values")
+                    with col3:
+                        feat_type = st.selectbox(
+                            f"Type for {col}",
+                            ["Text", "Categorical (String)"],
+                            index=0,
+                            key=f"type_{col}"
+                        )
+                    
+                    if include:
+                        text_selected.append(col)
+                        column_types[col]["confirmed_type"] = feat_type
+                        if feat_type == "Text":
+                            column_groups["Text"].append(col)
+                        else:
+                            column_groups["Categorical (String)"].append(col)
+                
+                st.success(f"Selected {len(text_selected)} text features")
+        
+        with feature_tabs[3]:  # All Features tab
+            st.write("Summary of all features:")
+            
+            # Display target column
+            st.markdown(f"**Target Column:** {target} ({column_types[target]['target_type']})")
+            
+            # Display features by group
+            if column_groups["Continuous"]:
+                st.markdown(f"**Continuous Features:** {', '.join(column_groups['Continuous'])} ({len(column_groups['Continuous'])} total)")
+            
+            if column_groups["Categorical (Numeric)"]:
+                st.markdown(f"**Categorical (Numeric) Features:** {', '.join(column_groups['Categorical (Numeric)'])} ({len(column_groups['Categorical (Numeric)'])} total)")
+            
+            if column_groups["Categorical (String)"]:
+                st.markdown(f"**Categorical (String) Features:** {', '.join(column_groups['Categorical (String)'])} ({len(column_groups['Categorical (String)'])} total)")
+            
+            if column_groups["Text"]:
+                st.markdown(f"**Text Features:** {', '.join(column_groups['Text'])} ({len(column_groups['Text'])} total)")
+            
+            # Calculate total features
+            total_features = len(column_groups["Continuous"]) + len(column_groups["Categorical (Numeric)"]) + len(column_groups["Categorical (String)"]) + len(column_groups["Text"])
+            st.success(f"Total: {total_features} features selected (plus 1 target column)")
+        
+        # Collect all selected features
+        selected_features = []
+        selected_features.extend(column_groups["Continuous"])
+        selected_features.extend(column_groups["Categorical (Numeric)"])
+        selected_features.extend(column_groups["Categorical (String)"])
+        selected_features.extend(column_groups["Text"])
+        
         if not selected_features:
             st.error("⚠️ Please select at least one feature to proceed.")
             st.stop()
-
-        # Automatic Preprocessing Setup
+        
+        # Get continuous and categorical features for preprocessing
+        cont_features = column_groups["Continuous"]
+        cat_features = column_groups["Categorical (Numeric)"] + column_groups["Categorical (String)"]
+        text_features = column_groups["Text"]
+        
+        # Display final feature set info
+        st.subheader("Feature Selection Summary")
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write(f"Target: {target} ({column_types[target]['target_type']})")
+            st.write(f"Task Type: {task_type}")
+        with col2:
+            st.write(f"Continuous Features: {len(cont_features)}")
+            st.write(f"Categorical Features: {len(cat_features)}")
+            if text_features:
+                st.write(f"Text Features: {len(text_features)}")
+        
         st.markdown("#### Automatic Preprocessing Settings")
         
+        # Update preprocessing options based on feature types
         preprocessing_options = {}
         
-        # Continuous features preprocessing
-        cont_features = [f for f in selected_features if feature_info[f]['dtype'] == "Continuous"]
+        # Continuous features preprocessing - only show if continuous features exist
         if cont_features:
             st.markdown("**Continuous Features Processing**")
             col1, col2 = st.columns(2)
@@ -758,9 +879,13 @@ if train_file and test_file:
                     "Outlier handling:",
                     ["None", "Clip to IQR", "Remove outliers"]
                 )
+        else:
+            # Default values if no continuous features
+            preprocessing_options['continuous_scaling'] = "None"
+            preprocessing_options['handle_outliers'] = "None"
+            st.info("No continuous features selected, scaling and outlier handling options are disabled.")
 
-        # Categorical features preprocessing
-        cat_features = [f for f in selected_features if "Categorical" in feature_info[f]['dtype']]
+        # Categorical features preprocessing - only show if categorical features exist
         if cat_features:
             st.markdown("**Categorical Features Processing**")
             col1, col2 = st.columns(2)
@@ -774,9 +899,14 @@ if train_file and test_file:
                     "Handle rare categories:",
                     ["None", "Group rare (<1%)", "Group rare (<5%)"]
                 )
+        else:
+            # Default values if no categorical features
+            preprocessing_options['categorical_encoding'] = "None"
+            preprocessing_options['handle_rare'] = "None"
+            st.info("No categorical features selected, encoding options are disabled.")
 
         # Missing value handling
-        if any(feature_info[f]['missing'] > 0 for f in selected_features):
+        if any(df_train[f].isnull().sum() > 0 for f in selected_features):
             st.markdown("**Missing Value Handling**")
             col1, col2 = st.columns(2)
             with col1:
@@ -789,198 +919,18 @@ if train_file and test_file:
                     "Handle missing categorical values:",
                     ["Mode", "New category", "Drop rows"]
                 )
-
-        # Apply preprocessing based on settings
-        def preprocess_data(df, is_train=True):
-            df_processed = df.copy()
-            
-            # Handle mixed type columns first
-            mixed_features = [f for f in selected_features if feature_info[f]['dtype'] == "Mixed (Numeric/Categorical)"]
-            for col in mixed_features:
-                # Replace special values with NaN
-                special_values = feature_info[col]['special_values']
-                if special_values:
-                    df_processed[col] = df_processed[col].replace(special_values, np.nan)
-                
-                # Try converting to numeric
-                df_processed[col] = pd.to_numeric(df_processed[col], errors='coerce')
-                
-                # Handle the resulting NaN values based on preprocessing options
-                if preprocessing_options.get('missing_num') == "Mean":
-                    if is_train:
-                        col_mean = df_processed[col].mean()
-                    df_processed[col].fillna(col_mean, inplace=True)
-                elif preprocessing_options.get('missing_num') == "Median":
-                    if is_train:
-                        col_median = df_processed[col].median()
-                    df_processed[col].fillna(col_median, inplace=True)
-                elif preprocessing_options.get('missing_num') == "KNN Imputer":
-                    if is_train:
-                        imputer = KNNImputer(n_neighbors=5)
-                        df_processed[col] = imputer.fit_transform(df_processed[[col]])
-                    else:
-                        df_processed[col] = imputer.transform(df_processed[[col]])
-
-            # Handle missing values
-            if 'missing_num' in preprocessing_options:
-                for col in cont_features:
-                    if preprocessing_options['missing_num'] == "Mean":
-                        if is_train:
-                            col_mean = df_processed[col].mean()
-                        df_processed[col].fillna(col_mean, inplace=True)
-                    elif preprocessing_options['missing_num'] == "Median":
-                        if is_train:
-                            col_median = df_processed[col].median()
-                        df_processed[col].fillna(col_median, inplace=True)
-                    elif preprocessing_options['missing_num'] == "Drop rows":
-                        df_processed.dropna(subset=[col], inplace=True)
-
-            if 'missing_cat' in preprocessing_options:
-                for col in cat_features:
-                    if preprocessing_options['missing_cat'] == "Mode":
-                        if is_train:
-                            col_mode = df_processed[col].mode()[0]
-                        df_processed[col].fillna(col_mode, inplace=True)
-                    elif preprocessing_options['missing_cat'] == "New category":
-                        df_processed[col].fillna("Missing", inplace=True)
-                    elif preprocessing_options['missing_cat'] == "Drop rows":
-                        df_processed.dropna(subset=[col], inplace=True)
-
-            # Handle outliers in continuous features
-            if 'handle_outliers' in preprocessing_options and preprocessing_options['handle_outliers'] != "None":
-                for col in cont_features:
-                    if preprocessing_options['handle_outliers'] == "Clip to IQR":
-                        Q1 = df_processed[col].quantile(0.25)
-                        Q3 = df_processed[col].quantile(0.75)
-                        IQR = Q3 - Q1
-                        df_processed[col] = df_processed[col].clip(Q1 - 1.5*IQR, Q3 + 1.5*IQR)
-                    elif preprocessing_options['handle_outliers'] == "Remove outliers":
-                        Q1 = df_processed[col].quantile(0.25)
-                        Q3 = df_processed[col].quantile(0.75)
-                        IQR = Q3 - Q1
-                        mask = ~((df_processed[col] < (Q1 - 1.5 * IQR)) | (df_processed[col] > (Q3 + 1.5 * IQR)))
-                        df_processed = df_processed[mask]
-
-            # Scale continuous features
-            if 'continuous_scaling' in preprocessing_options and preprocessing_options['continuous_scaling'] != "None":
-                # Initialize scaler dictionaries if they don't exist
-                if not hasattr(preprocess_data, 'scalers'):
-                    preprocess_data.scalers = {}
-                
-                # Skip scaling if there are no continuous features
-                if not cont_features:
-                    if is_train:
-                        st.warning("⚠️ Standard Scaling was selected but no continuous features were found. Scaling will be skipped.")
-                else:
-                    for col in cont_features:
-                        # Create a unique key for each column and scaling method
-                        scaler_key = f"{preprocessing_options['continuous_scaling']}_{col}"
-                        
-                        # Handle empty arrays by adding safety check
-                        # Skip scaling if column is empty or all values are NaN
-                        if df_processed[col].dropna().empty:
-                            st.warning(f"⚠️ Cannot scale column '{col}' because it has no valid values after preprocessing.")
-                            continue
-                        
-                        if preprocessing_options['continuous_scaling'] == "Standard Scaling":
-                            if is_train:
-                                preprocess_data.scalers[scaler_key] = StandardScaler()
-                                # Reshape to handle 1D arrays properly
-                                values = df_processed[col].values.reshape(-1, 1)
-                                df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(values).flatten()
-                            else:
-                                if scaler_key in preprocess_data.scalers:
-                                    values = df_processed[col].values.reshape(-1, 1)
-                                    df_processed[col] = preprocess_data.scalers[scaler_key].transform(values).flatten()
-                        elif preprocessing_options['continuous_scaling'] == "Min-Max Scaling":
-                            if is_train:
-                                preprocess_data.scalers[scaler_key] = MinMaxScaler()
-                                values = df_processed[col].values.reshape(-1, 1)
-                                df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(values).flatten()
-                            else:
-                                if scaler_key in preprocess_data.scalers:
-                                    values = df_processed[col].values.reshape(-1, 1)
-                                    df_processed[col] = preprocess_data.scalers[scaler_key].transform(values).flatten()
-                        elif preprocessing_options['continuous_scaling'] == "Robust Scaling":
-                            if is_train:
-                                preprocess_data.scalers[scaler_key] = RobustScaler()
-                                values = df_processed[col].values.reshape(-1, 1)
-                                df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(values).flatten()
-                            else:
-                                if scaler_key in preprocess_data.scalers:
-                                    values = df_processed[col].values.reshape(-1, 1)
-                                    df_processed[col] = preprocess_data.scalers[scaler_key].transform(values).flatten()
-
-            # Handle categorical features
-            if 'categorical_encoding' in preprocessing_options:
-                # Skip encoding if there are no categorical features
-                if not cat_features:
-                    if is_train:
-                        st.warning("⚠️ Categorical encoding was selected but no categorical features were found. Encoding will be skipped.")
-                else:
-                    rare_categories_dict = {}  # Store rare categories for each column
-                    
-                    for col in cat_features:
-                        # Handle rare categories first
-                        if preprocessing_options['handle_rare'] != "None":
-                            if is_train:
-                                value_counts = df_processed[col].value_counts(normalize=True)
-                                threshold = 0.01 if preprocessing_options['handle_rare'] == "Group rare (<1%)" else 0.05
-                                rare_categories_dict[col] = value_counts[value_counts < threshold].index.tolist()
-                            
-                            # Replace rare categories with "Other"
-                            if col in rare_categories_dict:
-                                df_processed[col] = df_processed[col].apply(
-                                    lambda x: "Other" if x in rare_categories_dict[col] else x
-                                )
-
-                        # Handle encoding
-                        if preprocessing_options['categorical_encoding'] == "One-Hot Encoding":
-                            if is_train:
-                                # Get dummy variables
-                                dummies = pd.get_dummies(df_processed[col], prefix=col)
-                                # Store column names for later use
-                                if not hasattr(preprocess_data, 'dummy_columns'):
-                                    preprocess_data.dummy_columns = {}
-                                preprocess_data.dummy_columns[col] = dummies.columns.tolist()
-                                df_processed = pd.concat([df_processed.drop(col, axis=1), dummies], axis=1)
-                            else:
-                                # Create dummies using only the columns from training
-                                dummies = pd.get_dummies(df_processed[col], prefix=col)
-                                # Add missing columns from training
-                                for dummy_col in preprocess_data.dummy_columns[col]:
-                                    if dummy_col not in dummies.columns:
-                                        dummies[dummy_col] = 0
-                                # Remove extra columns not in training
-                                dummies = dummies[preprocess_data.dummy_columns[col]]
-                                df_processed = pd.concat([df_processed.drop(col, axis=1), dummies], axis=1)
-                        
-                        elif preprocessing_options['categorical_encoding'] == "Label Encoding":
-                            if is_train:
-                                if not hasattr(preprocess_data, 'label_encoders'):
-                                    preprocess_data.label_encoders = {}
-                                preprocess_data.label_encoders[col] = LabelEncoder()
-                                df_processed[col] = preprocess_data.label_encoders[col].fit_transform(df_processed[col])
-                            else:
-                                # Handle unseen categories by adding them to the encoder
-                                if not set(df_processed[col].unique()).issubset(set(preprocess_data.label_encoders[col].classes_)):
-                                    new_categories = set(df_processed[col].unique()) - set(preprocess_data.label_encoders[col].classes_)
-                                    df_processed[col] = df_processed[col].replace(list(new_categories), preprocess_data.label_encoders[col].classes_[0])
-                                df_processed[col] = preprocess_data.label_encoders[col].transform(df_processed[col])
-                        
-                        elif preprocessing_options['categorical_encoding'] == "Target Encoding" and is_train:
-                            if not hasattr(preprocess_data, 'target_encodings'):
-                                preprocess_data.target_encodings = {}
-                            target_mean = df_processed.groupby(col)[target].mean()
-                            preprocess_data.target_encodings[col] = target_mean
-                            df_processed[col] = df_processed[col].map(target_mean)
-
-            return df_processed
-
-        # Process the data
-        X_train = preprocess_data(df_train[selected_features], is_train=True)
-        X_test = preprocess_data(df_test[selected_features], is_train=False)
+        else:
+            # Default values if no missing values
+            preprocessing_options['missing_num'] = "Mean"
+            preprocessing_options['missing_cat'] = "Mode"
+            st.success("No missing values detected in selected features.")
         
+        # Set data and variables
+        is_classification = task_type == "Classification"
+        
+        # Define feature types for preprocessing
+        X_train = df_train[selected_features]
+        X_test = df_test[selected_features]
         y_train = df_train[target]
         y_test = df_test[target]
 
