@@ -513,6 +513,57 @@ def generate_bmj_report(summary, figures, doc_path):
     doc.save(doc_path)
     return doc_path
 
+# Add this helper function after the other helper functions but before the main app code
+def auto_fix_data_types(df, target_col=None, verbose=True):
+    """Automatically detect and fix data type issues in dataframe columns"""
+    issues_fixed = {}
+    df_fixed = df.copy()
+    
+    # Auto-detect numeric columns with mixed types
+    for col in df_fixed.columns:
+        # Skip if column is already numeric
+        if pd.api.types.is_numeric_dtype(df_fixed[col]):
+            continue
+            
+        # Try to convert to numeric
+        try:
+            # Count non-null values before conversion
+            non_null_before = df_fixed[col].count()
+            
+            # Try conversion with coercion (converts failed values to NaN)
+            df_fixed[col] = pd.to_numeric(df_fixed[col], errors='coerce')
+            
+            # Count non-null values after conversion
+            non_null_after = df_fixed[col].count()
+            
+            # Calculate how many values were converted to NaN
+            converted_to_nan = non_null_before - non_null_after
+            
+            if converted_to_nan > 0:
+                issues_fixed[col] = converted_to_nan
+                
+        except Exception as e:
+            # If conversion completely fails, keep original
+            pass
+    
+    # If this is the target column for a regression task, ensure it's numeric
+    if target_col and target_col in df_fixed.columns:
+        if not pd.api.types.is_numeric_dtype(df_fixed[target_col]):
+            try:
+                # Try converting target to numeric
+                non_null_before = df_fixed[target_col].count()
+                df_fixed[target_col] = pd.to_numeric(df_fixed[target_col], errors='coerce')
+                non_null_after = df_fixed[target_col].count()
+                converted_to_nan = non_null_before - non_null_after
+                
+                if converted_to_nan > 0:
+                    issues_fixed[target_col] = converted_to_nan
+            except:
+                # If target can't be converted to numeric, we'll need to handle it elsewhere
+                pass
+    
+    return df_fixed, issues_fixed
+
 # --- DATA UPLOAD ---
 st.subheader("Step 1: Upload Your Datasets")
 train_file = st.file_uploader("Upload Training Set (CSV)", type="csv")
@@ -549,6 +600,22 @@ if train_file and test_file:
         test_file.seek(0)
         df_train = pd.read_csv(train_file)
         df_test = pd.read_csv(test_file)
+        
+        # Auto-fix data types with clear messaging
+        st.info("🔍 Automatically checking data types and fixing issues...")
+        df_train, train_issues = auto_fix_data_types(df_train)
+        df_test, test_issues = auto_fix_data_types(df_test)
+        
+        # Report any fixes made
+        if train_issues or test_issues:
+            issues_text = []
+            if train_issues:
+                issues_text.append(f"Training set: {', '.join([f'{col} ({count} values)' for col, count in train_issues.items()])}")
+            if test_issues:
+                issues_text.append(f"Test set: {', '.join([f'{col} ({count} values)' for col, count in test_issues.items()])}")
+                
+            st.success("✅ Data type issues were automatically fixed in: " + "; ".join(issues_text))
+            st.info("Non-numeric values were converted to missing values and will be handled by your missing value strategy.")
         
         # Data Overview
         st.subheader("Step 3: Data Overview and Feature Selection")
@@ -1009,37 +1076,87 @@ if train_file and test_file:
     # Train and evaluate models
     for model_name in all_models:
         model = models[model_name]
-        model.fit(X_train_enc, y_train_enc)
-        preds = model.predict(X_test_enc)
-        model_outputs[model_name] = preds
+        try:
+            # Ensure data types are consistent before fitting
+            X_train_safe = X_train_enc.copy()
+            for col in X_train_safe.columns:
+                if not pd.api.types.is_numeric_dtype(X_train_safe[col]):
+                    X_train_safe[col] = pd.to_numeric(X_train_safe[col], errors='coerce')
+                    # Fill remaining NaNs with median
+                    X_train_safe[col] = X_train_safe[col].fillna(X_train_safe[col].median() if not X_train_safe[col].empty else 0)
+            
+            X_test_safe = X_test_enc.copy()
+            for col in X_test_safe.columns:
+                if not pd.api.types.is_numeric_dtype(X_test_safe[col]):
+                    X_test_safe[col] = pd.to_numeric(X_test_safe[col], errors='coerce')
+                    # Fill remaining NaNs with median
+                    X_test_safe[col] = X_test_safe[col].fillna(X_test_safe[col].median() if not X_test_safe[col].empty else 0)
+            
+            # Ensure target is proper type
+            if is_classification:
+                y_train_safe = y_train_enc.astype(int)
+                y_test_safe = y_test_enc.astype(int)
+            else:
+                y_train_safe = pd.to_numeric(y_train_enc, errors='coerce').fillna(y_train_enc.median())
+                y_test_safe = pd.to_numeric(y_test_enc, errors='coerce').fillna(y_test_enc.median())
+            
+            # Fit model with robust error handling
+            model.fit(X_train_safe, y_train_safe)
+            preds = model.predict(X_test_safe)
+            model_outputs[model_name] = preds
 
-        if is_classification:
-            probs = model.predict_proba(X_test_enc)
-            y_bin = label_binarize(y_test_enc, classes=list(label_map.values()))
-            acc = accuracy_score(y_test_enc, preds)
-            f1 = f1_score(y_test_enc, preds, average='weighted')
-            auc_macro = roc_auc_score(y_bin, probs, average='macro', multi_class='ovr')
-            kappa = cohen_kappa_score(y_test_enc, preds, weights='quadratic')
-            results.append({
-                "Model": model_name,
-                "Accuracy": acc,
-                "F1 Score": f1,
-                "Kappa": kappa,
-                "Macro AUC": auc_macro,
-                "Brier Score": brier_score_loss((y_test_enc == max(label_map.values())).astype(int), 
-                                              probs[:, max(label_map.values())])
-            })
-            interpretation = f"🔍 For {model_name}, the model achieved an accuracy of {acc:.2f}, indicating that about {int(acc*100)}% of predictions were correct. Its F1 score of {f1:.2f} suggests it balances precision and recall well, while a kappa of {kappa:.2f} implies {('moderate' if kappa < 0.6 else 'strong')} agreement beyond chance."
-            explanation.append(interpretation)
-        else:
-            r2 = r2_score(y_test_enc, preds)
-            rmse = np.sqrt(mean_squared_error(y_test_enc, preds))
-            results.append({
-                "Model": model_name,
-                "R2 Score": r2,
-                "RMSE": rmse
-            })
-            explanation.append(f"🔍 For {model_name}, the R² score is {r2:.2f}, indicating that the model explains {int(r2*100)}% of the variance in the outcome. The RMSE of {rmse:.2f} indicates the typical prediction error magnitude.")
+            if is_classification:
+                probs = model.predict_proba(X_test_safe)
+                y_bin = label_binarize(y_test_safe, classes=list(label_map.values()))
+                acc = accuracy_score(y_test_safe, preds)
+                f1 = f1_score(y_test_safe, preds, average='weighted')
+                auc_macro = roc_auc_score(y_bin, probs, average='macro', multi_class='ovr')
+                kappa = cohen_kappa_score(y_test_safe, preds, weights='quadratic')
+                results.append({
+                    "Model": model_name,
+                    "Accuracy": acc,
+                    "F1 Score": f1,
+                    "Kappa": kappa,
+                    "Macro AUC": auc_macro,
+                    "Brier Score": brier_score_loss((y_test_safe == max(label_map.values())).astype(int), 
+                                                  probs[:, max(label_map.values())])
+                })
+                interpretation = f"🔍 For {model_name}, the model achieved an accuracy of {acc:.2f}, indicating that about {int(acc*100)}% of predictions were correct. Its F1 score of {f1:.2f} suggests it balances precision and recall well, while a kappa of {kappa:.2f} implies {('moderate' if kappa < 0.6 else 'strong')} agreement beyond chance."
+                explanation.append(interpretation)
+            else:
+                r2 = r2_score(y_test_safe, preds)
+                rmse = np.sqrt(mean_squared_error(y_test_safe, preds))
+                results.append({
+                    "Model": model_name,
+                    "R2 Score": r2,
+                    "RMSE": rmse
+                })
+                explanation.append(f"🔍 For {model_name}, the R² score is {r2:.2f}, indicating that the model explains {int(r2*100)}% of the variance in the outcome. The RMSE of {rmse:.2f} indicates the typical prediction error magnitude.")
+        
+        except Exception as e:
+            st.warning(f"⚠️ Error training {model_name}: {str(e)}")
+            import traceback
+            st.write("Details (for debugging):")
+            with st.expander("Show error details"):
+                st.code(traceback.format_exc())
+            
+            # Add a dummy result so the app doesn't crash
+            if is_classification:
+                results.append({
+                    "Model": model_name,
+                    "Accuracy": 0.0,
+                    "F1 Score": 0.0,
+                    "Kappa": 0.0,
+                    "Macro AUC": 0.0,
+                    "Brier Score": 1.0
+                })
+            else:
+                results.append({
+                    "Model": model_name,
+                    "R2 Score": 0.0,
+                    "RMSE": 9999.0
+                })
+            explanation.append(f"⚠️ {model_name} failed to train due to data compatibility issues.")
 
     # Add metric explanations
     METRIC_EXPLANATIONS = {
