@@ -74,7 +74,7 @@ VIZ_EXPLANATIONS = {
 def add_tooltip(label, tooltip_key):
     return f"{label} <span title='{TOOLTIPS[tooltip_key]}' style='cursor: help;'>❓</span>"
 
-# Add new function here
+# Define get_accurate_unique_count function
 def get_accurate_unique_count(series):
     """Get accurate unique value count regardless of data type"""
     try:
