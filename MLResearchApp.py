@@ -20,6 +20,7 @@ import json
 from datetime import datetime
 import pickle
 import traceback
+import warnings
 from sklearn.model_selection import StratifiedKFold, cross_val_score, train_test_split, GridSearchCV, RandomizedSearchCV
 from sklearn.preprocessing import label_binarize, StandardScaler, MinMaxScaler, RobustScaler
 from sklearn.feature_selection import SelectKBest, f_classif, mutual_info_classif, RFE
@@ -43,6 +44,11 @@ from sklearn.dummy import DummyClassifier, DummyRegressor
 from sklearn.svm import SVC, SVR
 from sklearn.neural_network import MLPClassifier, MLPRegressor
 from sklearn.preprocessing import LabelEncoder
+
+# Suppress specific warnings
+warnings.filterwarnings("ignore", message="Mean of empty slice")
+warnings.filterwarnings("ignore", category=RuntimeWarning)
+warnings.filterwarnings("ignore", message="Parameters:")
 
 # Add tooltips dictionary at the top of the file after imports
 TOOLTIPS = {
@@ -623,11 +629,73 @@ task_type = st.radio(
 )
 is_classification = task_type == "Classification"
 
+# --- CUSTOM CSV READER FUNCTION ---
+def read_csv_robust(file):
+    """Read CSV file with robust handling of categorical columns and encoding issues"""
+    # Try multiple encodings
+    encodings = ['utf-8', 'latin1', 'ISO-8859-1', 'cp1252']
+    for encoding in encodings:
+        try:
+            # Reset file pointer
+            file.seek(0)
+            # Try reading with different parsing options
+            df = pd.read_csv(
+                file, 
+                encoding=encoding,
+                low_memory=False,  # Prevent mixed type inference
+                skipinitialspace=True,  # Handle spaces after commas
+                na_values=['', 'NA', 'N/A', 'nan', 'NaN', 'None', '.', '?'],  # Handle various NA formats
+            )
+            
+            # Post-process the dataframe to ensure proper type detection
+            for col in df.columns:
+                # Clean column names
+                new_col = col.strip()
+                if new_col != col:
+                    df.rename(columns={col: new_col}, inplace=True)
+                    col = new_col
+                
+                # Count unique values directly
+                unique_values = set()
+                for val in df[col].dropna():
+                    try:
+                        # Normalize the value to string for consistent comparison
+                        unique_values.add(str(val).strip())
+                    except:
+                        pass
+                
+                # Add metadata to the dataframe
+                df[col].attrs['unique_count'] = len(unique_values)
+                df[col].attrs['sample_values'] = [str(x) for x in df[col].dropna().head(5).tolist()]
+                
+                # Try to detect if numeric
+                try:
+                    if df[col].dtypes == 'object':
+                        # Check if column can be converted to numeric
+                        pd.to_numeric(df[col], errors='raise')
+                        df[col] = pd.to_numeric(df[col], errors='coerce')
+                except:
+                    # Keep as object type if conversion fails
+                    pass
+            
+            st.success(f"✅ Successfully loaded data with encoding: {encoding}")
+            return df
+            
+        except Exception as e:
+            continue
+    
+    # If all encodings fail
+    st.error("❌ Failed to read CSV file with any encoding. Please check the file format.")
+    return None
+
 # --- AUTO PROFILING ---
 if train_file:
     try:
-        train_file.seek(0)
-        df_train = pd.read_csv(train_file)
+        # Use the robust CSV reader instead of standard pd.read_csv
+        df_train = read_csv_robust(train_file)
+        if df_train is None:
+            st.stop()
+            
         st.success("✅ Training data loaded")
         if st.button("🧠 Run Auto-Profiling (Sweetviz)"):
             report = sv.analyze(df_train)
@@ -642,56 +710,50 @@ if train_file:
 
 if train_file and test_file:
     try:
-        train_file.seek(0)
-        test_file.seek(0)
-        df_train = pd.read_csv(train_file)
-        df_test = pd.read_csv(test_file)
+        # Use robust CSV reader for both files
+        df_train = read_csv_robust(train_file)
+        df_test = read_csv_robust(test_file)
         
-        # Define the function locally to ensure it's available
-        def get_accurate_unique_count(series):
-            """Get accurate unique value count regardless of data type"""
-            try:
-                # Handle empty series
-                if len(series) == 0:
-                    return 0
-                    
-                # First check for pandas categorical type
-                if pd.api.types.is_categorical_dtype(series):
-                    return len(series.cat.categories)
-                    
-                # For object types (strings, mixed), clean and normalize before counting
-                if series.dtype == 'object':
-                    # Convert to string, strip whitespace, and normalize case
-                    cleaned = series.astype(str).str.strip()
-                    # Count unique non-null values
-                    return cleaned.replace('', np.nan).replace('nan', np.nan).dropna().nunique()
-                    
-                # For numeric types, use standard nunique but handle NaN values properly
-                elif pd.api.types.is_numeric_dtype(series):
-                    return series.dropna().nunique()
-                    
-                # For datetime types
-                elif pd.api.types.is_datetime64_dtype(series):
-                    return series.dropna().nunique()
-                    
-                # For all other types, convert to string with careful handling
-                else:
-                    # Convert to string but handle special cases
-                    return series.astype(str).replace('', np.nan).replace('nan', np.nan).replace('None', np.nan).dropna().nunique()
-                    
-            except Exception as e:
-                # Print error for debugging but continue execution
-                st.warning(f"Error calculating unique values: {str(e)}")
-                # Fallback methods
+        if df_train is None or df_test is None:
+            st.stop()
+        
+        # Add a direct method to get unique value counts that bypasses the problematic pandas methods
+        def get_direct_unique_count(df, column_name):
+            """Get unique values directly without relying on pandas methods"""
+            if column_name not in df.columns:
+                return 0
+                
+            if hasattr(df[column_name], 'attrs') and 'unique_count' in df[column_name].attrs:
+                return df[column_name].attrs['unique_count']
+                
+            # Otherwise compute it directly
+            unique_vals = set()
+            for val in df[column_name].dropna():
                 try:
-                    # Try using Python's built-in set
-                    return len(set([str(x) for x in series.dropna().values]))
+                    # Convert to string and normalize for comparison
+                    clean_val = str(val).strip()
+                    if clean_val:  # Skip empty strings
+                        unique_vals.add(clean_val)
                 except:
-                    try:
-                        # Last resort - try numpy's unique
-                        return len(np.unique(series.dropna().values))
-                    except:
-                        return 0
+                    pass
+            return len(unique_vals)
+        
+        # Add debugging information
+        st.subheader("Data Loading Debug Information")
+        debug_expander = st.expander("Debug Column Values", expanded=False)
+        with debug_expander:
+            # Create columns for better layout
+            col1, col2 = st.columns(2)
+            with col1:
+                st.write("**Training Data Sample:**")
+                st.dataframe(df_train.head(3))
+            
+            with col2:
+                st.write("**Column Unique Value Counts:**")
+                for col in df_train.columns:
+                    unique_count = get_direct_unique_count(df_train, col)
+                    sample_vals = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
+                    st.write(f"**{col}**: {unique_count} unique values | Sample: {sample_vals}")
         
         # Auto-fix data types with clear messaging
         st.info("🔍 Automatically checking data types and fixing issues...")
@@ -732,8 +794,8 @@ if train_file and test_file:
             # Get sample of non-null values as strings to ensure display
             sample_values = [str(x) for x in df_train[col].dropna().head(5).tolist()]
             
-            # Get accurate unique count regardless of data type
-            unique_count = get_accurate_unique_count(df_train[col])
+            # Get accurate unique count using our direct method
+            unique_count = get_direct_unique_count(df_train, col)
             
             missing_count = df_train[col].isnull().sum()
             
@@ -792,7 +854,7 @@ if train_file and test_file:
         target = st.selectbox(
             "Select your target column (what you want to predict):",
             target_options,
-            format_func=lambda x: f"{x} ({column_types[x]['unique_count']} unique values, {column_types[x]['suggested_type']})"
+            format_func=lambda x: f"{x} ({get_direct_unique_count(df_train, x)} unique values, {column_types[x]['suggested_type']})"
         )
         
         # Suggest task type based on target column
@@ -838,20 +900,21 @@ if train_file and test_file:
                 for col in numeric_cols:
                     col1, col2, col3 = st.columns([3, 2, 3])
                     with col1:
-                        include = st.checkbox(f"Include {col}", value=True)
+                        include = st.checkbox(f"Include {col}", value=True, key=f"include_num_{col}")
                     with col2:
                         # Show actual values from the column to help user decide
                         sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
                         st.write(f"Sample: {sample_values}")
-                        actual_unique = get_accurate_unique_count(df_train[col])
-                        st.write(f"Unique values: {actual_unique}")
+                        # Use our direct method for unique counts
+                        unique_count = get_direct_unique_count(df_train, col)
+                        st.write(f"Unique values: {unique_count}")
                     with col3:
                         # Allow selecting any type
                         feat_type = st.selectbox(
                             f"Type for {col}",
                             ["Continuous", "Categorical (Numeric)", "Categorical (String)", "Text"],
                             index=0 if column_types[col]['suggested_type'] == "Continuous" else 1,
-                            key=f"type_{col}"
+                            key=f"type_num_{col}"
                         )
                     
                     if include:
@@ -879,20 +942,21 @@ if train_file and test_file:
                 for col in categorical_cols:
                     col1, col2, col3 = st.columns([3, 2, 3])
                     with col1:
-                        include = st.checkbox(f"Include {col}", value=True)
+                        include = st.checkbox(f"Include {col}", value=True, key=f"include_cat_{col}")
                     with col2:
                         # Show actual values from the column to help user decide
                         sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
                         st.write(f"Sample: {sample_values}")
-                        actual_unique = get_accurate_unique_count(df_train[col])
-                        st.write(f"Unique values: {actual_unique}")
+                        # Use our direct method for unique counts
+                        unique_count = get_direct_unique_count(df_train, col)
+                        st.write(f"Unique values: {unique_count}")
                     with col3:
                         # Allow selecting any type
                         feat_type = st.selectbox(
                             f"Type for {col}",
                             ["Categorical (String)", "Categorical (Numeric)", "Continuous", "Text"],
                             index=0,
-                            key=f"type_{col}"
+                            key=f"type_cat_{col}"
                         )
                     
                     if include:
@@ -920,20 +984,21 @@ if train_file and test_file:
                 for col in text_cols:
                     col1, col2, col3 = st.columns([3, 2, 3])
                     with col1:
-                        include = st.checkbox(f"Include {col}", value=True)
+                        include = st.checkbox(f"Include {col}", value=True, key=f"include_text_{col}")
                     with col2:
                         # Show actual values from the column to help user decide
                         sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
                         st.write(f"Sample: {sample_values}")
-                        actual_unique = get_accurate_unique_count(df_train[col])
-                        st.write(f"Unique values: {actual_unique}")
+                        # Use our direct method for unique counts
+                        unique_count = get_direct_unique_count(df_train, col)
+                        st.write(f"Unique values: {unique_count}")
                     with col3:
                         # Allow selecting any type
                         feat_type = st.selectbox(
                             f"Type for {col}",
                             ["Text", "Categorical (String)", "Categorical (Numeric)", "Continuous"],
                             index=0,
-                            key=f"type_{col}"
+                            key=f"type_text_{col}"
                         )
                     
                     if include:
@@ -1173,9 +1238,9 @@ if train_file and test_file:
             "Simple Decision Tree": DecisionTreeClassifier(max_depth=3, class_weight='balanced'),
             "Dummy Classifier (Mode)": DummyClassifier(strategy='most_frequent'),
             "Random Forest": RandomForestClassifier(class_weight='balanced', random_state=42),
-            "XGBoost": XGBClassifier(use_label_encoder=False, eval_metric='mlogloss', random_state=42),
-            "Support Vector Machine": SVC(probability=True, class_weight='balanced'),
-            "Neural Network": MLPClassifier(max_iter=1000, random_state=42)
+            "XGBoost": XGBClassifier(eval_metric='mlogloss', random_state=42),
+            "SVM": SVC(probability=True, class_weight='balanced', random_state=42),
+            "Neural Network": MLPClassifier(max_iter=500, random_state=42)
         }
     else:
         models = {
@@ -1185,7 +1250,7 @@ if train_file and test_file:
             "Random Forest": RandomForestRegressor(random_state=42),
             "XGBoost": XGBRegressor(random_state=42),
             "Support Vector Machine": SVR(),
-            "Neural Network": MLPRegressor(max_iter=1000, random_state=42)
+            "Neural Network": MLPRegressor(max_iter=500, random_state=42)
         }
 
     # Train and evaluate models
@@ -1241,19 +1306,33 @@ if train_file and test_file:
 
             if is_classification:
                 probs = model.predict_proba(X_test_safe)
-                y_bin = label_binarize(y_test_safe, classes=list(label_map.values()))
+                # Handle single-class datasets gracefully
+                unique_classes = np.unique(y_test_safe)
+                
+                # Basic metrics always available
                 acc = accuracy_score(y_test_safe, preds)
-                f1 = f1_score(y_test_safe, preds, average='weighted')
-                auc_macro = roc_auc_score(y_bin, probs, average='macro', multi_class='ovr')
+                f1 = f1_score(y_test_safe, preds, average='weighted', zero_division=0)
                 kappa = cohen_kappa_score(y_test_safe, preds, weights='quadratic')
+                
+                # Metrics that may fail with single-class datasets
+                try:
+                    y_bin = label_binarize(y_test_safe, classes=list(label_map.values()))
+                    auc_macro = roc_auc_score(y_bin, probs, average='macro', multi_class='ovr')
+                    brier = brier_score_loss((y_test_safe == max(label_map.values())).astype(int), 
+                                          probs[:, max(label_map.values())])
+                except (ValueError, IndexError) as e:
+                    # Handle case where there's only one class
+                    st.warning(f"⚠️ Could not compute AUC for {model_name} - likely only one class is present.")
+                    auc_macro = 0.0
+                    brier = 1.0
+                
                 results.append({
                     "Model": model_name,
                     "Accuracy": acc,
                     "F1 Score": f1,
                     "Kappa": kappa,
                     "Macro AUC": auc_macro,
-                    "Brier Score": brier_score_loss((y_test_safe == max(label_map.values())).astype(int), 
-                                                  probs[:, max(label_map.values())])
+                    "Brier Score": brier
                 })
                 interpretation = f"🔍 For {model_name}, the model achieved an accuracy of {acc:.2f}, indicating that about {int(acc*100)}% of predictions were correct. Its F1 score of {f1:.2f} suggests it balances precision and recall well, while a kappa of {kappa:.2f} implies {('moderate' if kappa < 0.6 else 'strong')} agreement beyond chance."
                 explanation.append(interpretation)
@@ -1476,257 +1555,412 @@ if train_file and test_file:
         fig = make_subplots(rows=1, cols=1)
         
         n_classes = len(label_map)
+        has_valid_curve = False
+        
         if n_classes == 2:  # Binary classification
             for model_name in all_models:
                 if hasattr(models[model_name], 'predict_proba'):
-                    y_pred_proba = models[model_name].predict_proba(X_test_enc)[:, 1]
-                    fpr, tpr, _ = roc_curve(y_test_enc, y_pred_proba)
-                    auc_score = auc(fpr, tpr)
-                    fig.add_trace(
-                        go.Scatter(x=fpr, y=tpr, name=f"{model_name} (AUC={auc_score:.2f})")
-                    )
+                    try:
+                        y_pred_proba = models[model_name].predict_proba(X_test_enc)[:, 1]
+                        
+                        # Check for single-class dataset
+                        unique_classes = np.unique(y_test_enc)
+                        if len(unique_classes) < 2:
+                            st.warning(f"⚠️ ROC curve requires at least two classes in the test set. Found only {len(unique_classes)} class for {model_name}.")
+                            continue
+                        
+                        fpr, tpr, _ = roc_curve(y_test_enc, y_pred_proba)
+                        auc_score = auc(fpr, tpr)
+                        fig.add_trace(
+                            go.Scatter(x=fpr, y=tpr, name=f"{model_name} (AUC={auc_score:.2f})")
+                        )
+                        has_valid_curve = True
+                    except Exception as e:
+                        st.warning(f"⚠️ Could not compute ROC curve for {model_name}: {str(e)}")
         else:  # Multiclass classification
             for model_name in all_models:
                 if hasattr(models[model_name], 'predict_proba'):
-                    y_pred_proba = models[model_name].predict_proba(X_test_enc)
-                    # Compute ROC curve and ROC area for each class
-                    fpr = dict()
-                    tpr = dict()
-                    roc_auc = dict()
-                    y_test_bin = label_binarize(y_test_enc, classes=list(range(n_classes)))
-                    
-                    for i in range(n_classes):
-                        fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_pred_proba[:, i])
-                        roc_auc[i] = auc(fpr[i], tpr[i])
-                        class_label = [k for k, v in label_map.items() if v == i][0]
-                        fig.add_trace(
-                            go.Scatter(
-                                x=fpr[i], 
-                                y=tpr[i], 
-                                name=f"{model_name} - Class {class_label} (AUC={roc_auc[i]:.2f})"
-                            )
-                        )
+                    try:
+                        y_pred_proba = models[model_name].predict_proba(X_test_enc)
+                        
+                        # Binarize test data
+                        try:
+                            y_test_bin = label_binarize(y_test_enc, classes=list(range(n_classes)))
+                        
+                            # Compute ROC curve and ROC area for each class
+                            fpr = dict()
+                            tpr = dict()
+                            roc_auc = dict()
+                            
+                            for i in range(n_classes):
+                                # Skip classes with no positive samples
+                                if np.sum(y_test_bin[:, i]) == 0:
+                                    continue
+                                    
+                                try:
+                                    fpr[i], tpr[i], _ = roc_curve(y_test_bin[:, i], y_pred_proba[:, i])
+                                    roc_auc[i] = auc(fpr[i], tpr[i])
+                                    
+                                    # Find original class label
+                                    class_labels = [k for k, v in label_map.items() if v == i]
+                                    if class_labels:
+                                        class_label = class_labels[0]
+                                    else:
+                                        class_label = f"Class {i}"
+                                    
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=fpr[i], 
+                                            y=tpr[i], 
+                                            name=f"{model_name} - {class_label} (AUC={roc_auc[i]:.2f})"
+                                        )
+                                    )
+                                    has_valid_curve = True
+                                except Exception as curve_error:
+                                    st.warning(f"⚠️ Error computing ROC curve for class {i}: {str(curve_error)}")
+                        except Exception as bin_error:
+                            st.warning(f"⚠️ Error binarizing targets for {model_name}: {str(bin_error)}")
+                    except Exception as model_error:
+                        st.warning(f"⚠️ Error generating ROC curves for {model_name}: {str(model_error)}")
 
-        fig.add_trace(
-            go.Scatter(x=[0, 1], y=[0, 1], name='Random', line=dict(dash='dash', color='gray'))
-        )
-        fig.update_layout(
-            title="ROC Curves",
-            xaxis_title="False Positive Rate",
-            yaxis_title="True Positive Rate",
-            showlegend=True,
-            width=800,
-            height=500,
-            margin=dict(l=50, r=50, t=50, b=50),
-            legend=dict(
-                yanchor="bottom",
-                y=0.01,
-                xanchor="right",
-                x=0.99
+        # Only add reference line and display if we have valid curves
+        if has_valid_curve:
+            fig.add_trace(
+                go.Scatter(x=[0, 1], y=[0, 1], name='Random', line=dict(dash='dash', color='gray'))
             )
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            fig.update_layout(
+                title="ROC Curves",
+                xaxis_title="False Positive Rate",
+                yaxis_title="True Positive Rate",
+                showlegend=True,
+                width=800,
+                height=500,
+                margin=dict(l=50, r=50, t=50, b=50),
+                legend=dict(
+                    yanchor="bottom",
+                    y=0.01,
+                    xanchor="right",
+                    x=0.99
+                )
+            )
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Could not generate any valid ROC curves. This typically happens with single-class datasets or when prediction fails.")
 
     if "Precision-Recall Curve" in viz_options and is_classification:
         st.markdown("#### Precision-Recall Curves")
         fig = make_subplots(rows=1, cols=1)
         
         n_classes = len(label_map)
+        has_valid_curve = False
+        
         if n_classes == 2:  # Binary classification
             for model_name in all_models:
                 if hasattr(models[model_name], 'predict_proba'):
-                    y_pred_proba = models[model_name].predict_proba(X_test_enc)[:, 1]
-                    precision, recall, _ = precision_recall_curve(y_test_enc, y_pred_proba)
-                    ap_score = average_precision_score(y_test_enc, y_pred_proba)
-                    fig.add_trace(
-                        go.Scatter(x=recall, y=precision, name=f"{model_name} (AP={ap_score:.2f})")
-                    )
+                    try:
+                        y_pred_proba = models[model_name].predict_proba(X_test_enc)[:, 1]
+                        
+                        # Check for single-class dataset
+                        unique_classes = np.unique(y_test_enc)
+                        if len(unique_classes) < 2:
+                            st.warning(f"⚠️ Precision-Recall curve requires at least two classes. Found only {len(unique_classes)} class for {model_name}.")
+                            continue
+                            
+                        precision, recall, _ = precision_recall_curve(y_test_enc, y_pred_proba)
+                        ap_score = average_precision_score(y_test_enc, y_pred_proba)
+                        fig.add_trace(
+                            go.Scatter(x=recall, y=precision, name=f"{model_name} (AP={ap_score:.2f})")
+                        )
+                        has_valid_curve = True
+                    except Exception as e:
+                        st.warning(f"⚠️ Could not compute Precision-Recall curve for {model_name}: {str(e)}")
         else:  # Multiclass classification
             for model_name in all_models:
                 if hasattr(models[model_name], 'predict_proba'):
-                    y_pred_proba = models[model_name].predict_proba(X_test_enc)
-                    # Compute Precision-Recall curve and average precision for each class
-                    precision = dict()
-                    recall = dict()
-                    avg_precision = dict()
-                    y_test_bin = label_binarize(y_test_enc, classes=list(range(n_classes)))
-                    
-                    for i in range(n_classes):
-                        precision[i], recall[i], _ = precision_recall_curve(y_test_bin[:, i], y_pred_proba[:, i])
-                        avg_precision[i] = average_precision_score(y_test_bin[:, i], y_pred_proba[:, i])
-                        class_label = [k for k, v in label_map.items() if v == i][0]
-                        fig.add_trace(
-                            go.Scatter(
-                                x=recall[i], 
-                                y=precision[i], 
-                                name=f"{model_name} - Class {class_label} (AP={avg_precision[i]:.2f})"
-                            )
-                        )
+                    try:
+                        y_pred_proba = models[model_name].predict_proba(X_test_enc)
+                        
+                        # Binarize test data safely
+                        try:
+                            y_test_bin = label_binarize(y_test_enc, classes=list(range(n_classes)))
+                            
+                            # Compute Precision-Recall curve and average precision for each class
+                            precision = dict()
+                            recall = dict()
+                            avg_precision = dict()
+                            
+                            for i in range(n_classes):
+                                # Skip classes with no positive samples
+                                if np.sum(y_test_bin[:, i]) == 0:
+                                    continue
+                                
+                                try:
+                                    precision[i], recall[i], _ = precision_recall_curve(y_test_bin[:, i], y_pred_proba[:, i])
+                                    avg_precision[i] = average_precision_score(y_test_bin[:, i], y_pred_proba[:, i])
+                                    
+                                    # Find original class label
+                                    class_labels = [k for k, v in label_map.items() if v == i]
+                                    if class_labels:
+                                        class_label = class_labels[0]
+                                    else:
+                                        class_label = f"Class {i}"
+                                    
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=recall[i], 
+                                            y=precision[i], 
+                                            name=f"{model_name} - {class_label} (AP={avg_precision[i]:.2f})"
+                                        )
+                                    )
+                                    has_valid_curve = True
+                                except Exception as curve_error:
+                                    st.warning(f"⚠️ Error computing Precision-Recall curve for class {i}: {str(curve_error)}")
+                        except Exception as bin_error:
+                            st.warning(f"⚠️ Error binarizing targets for {model_name}: {str(bin_error)}")
+                    except Exception as model_error:
+                        st.warning(f"⚠️ Error generating Precision-Recall curves for {model_name}: {str(model_error)}")
 
-        fig.update_layout(
-            title="Precision-Recall Curves",
-            xaxis_title="Recall",
-            yaxis_title="Precision",
-            showlegend=True,
-            width=800,
-            height=500,
-            margin=dict(l=50, r=50, t=50, b=50),
-            legend=dict(
-                yanchor="bottom",
-                y=0.01,
-                xanchor="right",
-                x=0.99
+        # Only display if we have valid curves
+        if has_valid_curve:
+            fig.update_layout(
+                title="Precision-Recall Curves",
+                xaxis_title="Recall",
+                yaxis_title="Precision",
+                showlegend=True,
+                width=800,
+                height=500,
+                margin=dict(l=50, r=50, t=50, b=50),
+                legend=dict(
+                    yanchor="bottom",
+                    y=0.01,
+                    xanchor="right",
+                    x=0.99
+                )
             )
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Could not generate any valid Precision-Recall curves. This typically happens with single-class datasets or when prediction fails.")
 
     if "Calibration Plot" in viz_options and is_classification:
         st.markdown("#### Calibration Plots")
         fig = make_subplots(rows=1, cols=1)
+        has_valid_plot = False
         
         n_classes = len(label_map)
         if n_classes == 2:  # Binary classification
             for model_name in all_models:
                 if hasattr(models[model_name], 'predict_proba'):
-                    y_pred_proba = models[model_name].predict_proba(X_test_enc)[:, 1]
-                    
-                    # Create bins
-                    n_bins = 10
-                    bins = np.linspace(0, 1, n_bins + 1)
-                    bin_indices = np.digitize(y_pred_proba, bins) - 1
-                    
-                    # Calculate mean predicted probability and fraction of positives for each bin
-                    bin_sums = np.bincount(bin_indices, weights=y_test_enc, minlength=len(bins))
-                    bin_counts = np.bincount(bin_indices, minlength=len(bins))
-                    bin_counts = np.where(bin_counts == 0, 1, bin_counts)  # Avoid division by zero
-                    fraction_positives = bin_sums / bin_counts
-                    
-                    # Calculate mean predicted probability for each bin
-                    mean_predicted_probs = np.bincount(bin_indices, weights=y_pred_proba, minlength=len(bins)) / bin_counts
-                    
-                    # Remove empty bins
-                    valid_bins = bin_counts > 0
-                    fraction_positives = fraction_positives[valid_bins]
-                    mean_predicted_probs = mean_predicted_probs[valid_bins]
-                    
-                    fig.add_trace(
-                        go.Scatter(
-                            x=mean_predicted_probs,
-                            y=fraction_positives,
-                            name=f"{model_name}",
-                            mode='lines+markers'
-                        )
-                    )
+                    try:
+                        y_pred_proba = models[model_name].predict_proba(X_test_enc)[:, 1]
+                        
+                        # Check for sufficient unique values
+                        if len(np.unique(y_test_enc)) < 2:
+                            st.warning(f"⚠️ Calibration plot requires multiple classes. Found only one class for {model_name}.")
+                            continue
+                            
+                        # Create bins
+                        n_bins = min(10, len(np.unique(y_pred_proba)))
+                        if n_bins < 2:
+                            st.warning(f"⚠️ Insufficient unique probability values for {model_name} calibration plot.")
+                            continue
+                            
+                        bins = np.linspace(0, 1, n_bins + 1)
+                        bin_indices = np.digitize(y_pred_proba, bins) - 1
+                        
+                        # Calculate mean predicted probability and fraction of positives for each bin
+                        try:
+                            bin_sums = np.bincount(bin_indices, weights=y_test_enc, minlength=len(bins))
+                            bin_counts = np.bincount(bin_indices, minlength=len(bins))
+                            bin_counts = np.where(bin_counts == 0, 1, bin_counts)  # Avoid division by zero
+                            fraction_positives = bin_sums / bin_counts
+                            
+                            # Calculate mean predicted probability for each bin
+                            mean_predicted_probs = np.bincount(bin_indices, weights=y_pred_proba, minlength=len(bins)) / bin_counts
+                            
+                            # Remove empty bins
+                            valid_bins = bin_counts > 0
+                            if np.sum(valid_bins) < 2:
+                                st.warning(f"⚠️ Insufficient valid bins for {model_name} calibration plot.")
+                                continue
+                                
+                            fraction_positives = fraction_positives[valid_bins]
+                            mean_predicted_probs = mean_predicted_probs[valid_bins]
+                            
+                            fig.add_trace(
+                                go.Scatter(
+                                    x=mean_predicted_probs,
+                                    y=fraction_positives,
+                                    name=f"{model_name}",
+                                    mode='lines+markers'
+                                )
+                            )
+                            has_valid_plot = True
+                        except Exception as bin_error:
+                            st.warning(f"⚠️ Error calculating calibration bins for {model_name}: {str(bin_error)}")
+                    except Exception as model_error:
+                        st.warning(f"⚠️ Error generating calibration plot for {model_name}: {str(model_error)}")
         else:  # Multiclass calibration
             for model_name in all_models:
                 if hasattr(models[model_name], 'predict_proba'):
-                    y_pred_proba = models[model_name].predict_proba(X_test_enc)
-                    y_test_bin = label_binarize(y_test_enc, classes=list(range(n_classes)))
-                    
-                    for i in range(n_classes):
-                        class_probs = y_pred_proba[:, i]
-                        class_true = y_test_bin[:, i]
+                    try:
+                        y_pred_proba = models[model_name].predict_proba(X_test_enc)
                         
-                        # Create bins
-                        n_bins = 10
-                        bins = np.linspace(0, 1, n_bins + 1)
-                        bin_indices = np.digitize(class_probs, bins) - 1
-                        
-                        # Calculate calibration for this class
-                        bin_sums = np.bincount(bin_indices, weights=class_true, minlength=len(bins))
-                        bin_counts = np.bincount(bin_indices, minlength=len(bins))
-                        bin_counts = np.where(bin_counts == 0, 1, bin_counts)
-                        fraction_positives = bin_sums / bin_counts
-                        mean_predicted_probs = np.bincount(bin_indices, weights=class_probs, minlength=len(bins)) / bin_counts
-                        
-                        # Remove empty bins
-                        valid_bins = bin_counts > 0
-                        fraction_positives = fraction_positives[valid_bins]
-                        mean_predicted_probs = mean_predicted_probs[valid_bins]
-                        
-                        class_label = [k for k, v in label_map.items() if v == i][0]
-                        fig.add_trace(
-                            go.Scatter(
-                                x=mean_predicted_probs,
-                                y=fraction_positives,
-                                name=f"{model_name} - Class {class_label}",
-                                mode='lines+markers'
-                            )
-                        )
+                        # Binarize safely
+                        try:
+                            y_test_bin = label_binarize(y_test_enc, classes=list(range(n_classes)))
+                            
+                            for i in range(n_classes):
+                                # Skip classes with no positive samples
+                                if np.sum(y_test_bin[:, i]) == 0:
+                                    continue
+                                    
+                                try:
+                                    class_probs = y_pred_proba[:, i]
+                                    class_true = y_test_bin[:, i]
+                                    
+                                    # Create bins
+                                    n_bins = min(10, len(np.unique(class_probs)))
+                                    if n_bins < 2:
+                                        continue
+                                        
+                                    bins = np.linspace(0, 1, n_bins + 1)
+                                    bin_indices = np.digitize(class_probs, bins) - 1
+                                    
+                                    # Calculate calibration for this class
+                                    bin_sums = np.bincount(bin_indices, weights=class_true, minlength=len(bins))
+                                    bin_counts = np.bincount(bin_indices, minlength=len(bins))
+                                    bin_counts = np.where(bin_counts == 0, 1, bin_counts)
+                                    fraction_positives = bin_sums / bin_counts
+                                    mean_predicted_probs = np.bincount(bin_indices, weights=class_probs, minlength=len(bins)) / bin_counts
+                                    
+                                    # Remove empty bins
+                                    valid_bins = bin_counts > 0
+                                    if np.sum(valid_bins) < 2:
+                                        continue
+                                    
+                                    fraction_positives = fraction_positives[valid_bins]
+                                    mean_predicted_probs = mean_predicted_probs[valid_bins]
+                                    
+                                    # Find original class label
+                                    class_labels = [k for k, v in label_map.items() if v == i]
+                                    if class_labels:
+                                        class_label = class_labels[0]
+                                    else:
+                                        class_label = f"Class {i}"
+                                    
+                                    fig.add_trace(
+                                        go.Scatter(
+                                            x=mean_predicted_probs,
+                                            y=fraction_positives,
+                                            name=f"{model_name} - {class_label}",
+                                            mode='lines+markers'
+                                        )
+                                    )
+                                    has_valid_plot = True
+                                except Exception as class_error:
+                                    st.warning(f"⚠️ Error calculating calibration for class {i}: {str(class_error)}")
+                        except Exception as bin_error:
+                            st.warning(f"⚠️ Error binarizing targets for calibration: {str(bin_error)}")
+                    except Exception as model_error:
+                        st.warning(f"⚠️ Error generating calibration plots for {model_name}: {str(model_error)}")
 
-        # Add diagonal reference line
-        fig.add_trace(
-            go.Scatter(
-                x=[0, 1],
-                y=[0, 1],
-                name="Perfectly Calibrated",
-                line=dict(dash='dash', color='gray')
+        # Only display if we have valid plots
+        if has_valid_plot:
+            # Add diagonal reference line
+            fig.add_trace(
+                go.Scatter(
+                    x=[0, 1],
+                    y=[0, 1],
+                    name="Perfectly Calibrated",
+                    line=dict(dash='dash', color='gray')
+                )
             )
-        )
-        
-        fig.update_layout(
-            title="Calibration Plots",
-            xaxis_title="Mean Predicted Probability",
-            yaxis_title="Fraction of Positives",
-            showlegend=True,
-            width=800,
-            height=500,
-            margin=dict(l=50, r=50, t=50, b=50),
-            legend=dict(
-                yanchor="bottom",
-                y=0.01,
-                xanchor="right",
-                x=0.99
+            
+            fig.update_layout(
+                title="Calibration Plots",
+                xaxis_title="Mean Predicted Probability",
+                yaxis_title="Fraction of Positives",
+                showlegend=True,
+                width=800,
+                height=500,
+                margin=dict(l=50, r=50, t=50, b=50),
+                legend=dict(
+                    yanchor="bottom",
+                    y=0.01,
+                    xanchor="right",
+                    x=0.99
+                )
             )
-        )
-        st.plotly_chart(fig, use_container_width=True)
+            st.plotly_chart(fig, use_container_width=True)
+        else:
+            st.warning("⚠️ Could not generate any valid calibration plots. This typically happens with single-class datasets or when prediction fails.")
 
     if "Confusion Matrix" in viz_options and is_classification:
         for model_name in all_models:
-            # Get predictions and convert back to original labels
-            preds_enc = model_outputs[model_name]
-            # Convert encoded predictions back to original labels using the inverse mapping
-            inverse_label_map = {v: k for k, v in label_map.items()}
-            preds = np.array([inverse_label_map[p] for p in preds_enc])
-            true_labels = np.array([inverse_label_map[y] for y in y_test_enc])
-            
-            # Get confusion matrix using original labels
-            cm = confusion_matrix(true_labels, preds)
-            
-            # Get original class labels (sorted to match encoding order)
-            class_labels = sorted(label_map.keys())
-            
-            # Create confusion matrix plot
-            fig = go.Figure(data=go.Heatmap(
-                z=cm,
-                x=class_labels,
-                y=class_labels,
-                text=cm,
-                texttemplate="%{text}",
-                textfont={"size": 16},
-                hoverongaps=False,
-                colorscale='RdBu'
-            ))
-            
-            fig.update_layout(
-                title=f"Confusion Matrix - {model_name}",
-                width=800,
-                height=800,  # Make it square
-                xaxis_title="Predicted Label",
-                yaxis_title="True Label",
-                margin=dict(l=50, r=50, t=50, b=50)
-            )
-            
-            # Add explanation of the confusion matrix
-            st.plotly_chart(fig, use_container_width=True)
-            st.markdown("""
-            **Understanding the Confusion Matrix:**
-            - Each row represents the actual class
-            - Each column represents the predicted class
-            - Numbers show how many cases were classified in each combination
-            - Diagonal elements (top-left to bottom-right) show correct predictions
-            - Off-diagonal elements show misclassifications
-            """)
+            try:
+                # Get predictions and convert back to original labels
+                preds_enc = model_outputs[model_name]
+                # Convert encoded predictions back to original labels using the inverse mapping
+                inverse_label_map = {v: k for k, v in label_map.items()}
+                preds = np.array([inverse_label_map[p] for p in preds_enc])
+                true_labels = np.array([inverse_label_map[y] for y in y_test_enc])
+                
+                # Get unique classes for labels
+                unique_true_classes = np.unique(true_labels)
+                unique_pred_classes = np.unique(preds)
+                all_classes = sorted(set(unique_true_classes) | set(unique_pred_classes))
+                
+                # Handle single-class datasets by providing labels explicitly
+                if len(all_classes) <= 1:
+                    st.warning(f"⚠️ Only one class detected in predictions for {model_name}. Confusion matrix may not be informative.")
+                    # Add a dummy class if only one class exists
+                    if len(all_classes) == 1:
+                        dummy_label = f"Not {all_classes[0]}"
+                        cm = np.zeros((2, 2))
+                        cm[0, 0] = np.sum(true_labels == preds)  # True positives
+                        class_labels = [all_classes[0], dummy_label]
+                    else:
+                        st.error("No valid classes found. Cannot create confusion matrix.")
+                        continue
+                else:
+                    # Get confusion matrix using original labels with explicit labels parameter
+                    cm = confusion_matrix(true_labels, preds, labels=all_classes)
+                    class_labels = all_classes
+                
+                # Create confusion matrix plot
+                fig = go.Figure(data=go.Heatmap(
+                    z=cm,
+                    x=class_labels,
+                    y=class_labels,
+                    text=cm,
+                    texttemplate="%{text}",
+                    textfont={"size": 16},
+                    hoverongaps=False,
+                    colorscale='RdBu'
+                ))
+                
+                fig.update_layout(
+                    title=f"Confusion Matrix - {model_name}",
+                    width=800,
+                    height=800,  # Make it square
+                    xaxis_title="Predicted Label",
+                    yaxis_title="True Label",
+                    margin=dict(l=50, r=50, t=50, b=50)
+                )
+                
+                # Add explanation of the confusion matrix
+                st.plotly_chart(fig, use_container_width=True)
+                st.markdown("""
+                **Understanding the Confusion Matrix:**
+                - Each row represents the actual class
+                - Each column represents the predicted class
+                - Numbers show how many cases were classified in each combination
+                - Diagonal elements (top-left to bottom-right) show correct predictions
+                - Off-diagonal elements show misclassifications
+                """)
+            except Exception as e:
+                st.error(f"⚠️ Could not generate confusion matrix for {model_name}: {str(e)}")
+                st.code(traceback.format_exc())
 
     if "Feature Importance Plot" in viz_options:
         for model_name in all_models:
@@ -1753,30 +1987,87 @@ if train_file and test_file:
         with st.expander("SHAP Analysis", expanded=False):
             st.markdown("#### SHAP Analysis")
             for model_name in all_models:
-                if hasattr(models[model_name], 'predict_proba'):
-                    explainer = shap.Explainer(models[model_name])
-                    shap_values = explainer(X_test_enc)
-                    fig = shap.summary_plot(shap_values, X_test_enc, show=False)
-                    st.pyplot(fig)
-                    plt.clf()
-                    st.markdown("SHAP values show how each feature contributes to the model's predictions. Positive values push predictions higher, negative values push them lower.")
+                try:
+                    if hasattr(models[model_name], 'predict_proba'):
+                        # Check dataset size to prevent memory issues
+                        max_samples = min(100, X_test_enc.shape[0])
+                        if max_samples < X_test_enc.shape[0]:
+                            st.info(f"Using {max_samples} samples for SHAP analysis to prevent memory issues.")
+                        
+                        sample_indices = np.random.choice(X_test_enc.shape[0], min(max_samples, X_test_enc.shape[0]), replace=False)
+                        X_test_sample = X_test_enc.iloc[sample_indices]
+                        
+                        # Use a try-except block for SHAP computation
+                        try:
+                            explainer = shap.Explainer(models[model_name], X_train_enc)
+                            shap_values = explainer(X_test_sample)
+                            
+                            fig, ax = plt.subplots(figsize=(10, 8))
+                            shap.summary_plot(shap_values, X_test_sample, show=False)
+                            st.pyplot(fig)
+                            plt.clf()
+                            st.markdown("SHAP values show how each feature contributes to the model's predictions. Positive values push predictions higher, negative values push them lower.")
+                        except Exception as shap_error:
+                            st.warning(f"⚠️ Error generating SHAP values for {model_name}: {str(shap_error)}")
+                            st.info("SHAP analysis may fail for some models or datasets. This doesn't affect the model performance.")
+                    else:
+                        st.info(f"{model_name} doesn't support prediction probabilities required for SHAP analysis.")
+                except Exception as e:
+                    st.error(f"⚠️ Error in SHAP analysis for {model_name}: {str(e)}")
+                    st.code(traceback.format_exc())
 
     # LIME Analysis
     if "LIME" in interpretability_method:
         with st.expander("LIME Analysis", expanded=False):
             st.markdown("#### LIME Analysis")
             for model_name in all_models:
-                if hasattr(models[model_name], 'predict_proba'):
-                    explainer = lime_tabular.LimeTabularExplainer(
-                        X_train_enc.values,
-                        feature_names=X_train_enc.columns,
-                        class_names=[str(i) for i in range(len(np.unique(y_train_enc)))],
-                        mode='classification' if is_classification else 'regression'
-                    )
-                    instance_idx = st.slider(f"Select instance to explain ({model_name}):", 0, len(X_test_enc)-1, 0)
-                    exp = explainer.explain_instance(X_test_enc.iloc[instance_idx].values, models[model_name].predict_proba)
-                    st.write(exp.as_list())
-                    st.markdown("LIME shows which features were most important for this specific prediction, helping understand individual cases.")
+                try:
+                    if hasattr(models[model_name], 'predict_proba'):
+                        # Determine class names safely
+                        unique_classes = np.unique(y_train_enc)
+                        if len(unique_classes) == 0:
+                            st.warning(f"No classes found for LIME analysis with {model_name}")
+                            continue
+                            
+                        class_names = [str(i) for i in unique_classes]
+                        
+                        # Create LIME explainer
+                        try:
+                            explainer = lime_tabular.LimeTabularExplainer(
+                                X_train_enc.values,
+                                feature_names=X_train_enc.columns,
+                                class_names=class_names,
+                                mode='classification' if is_classification else 'regression'
+                            )
+                            
+                            # Only proceed if we have test data
+                            if X_test_enc.shape[0] > 0:
+                                instance_idx = st.slider(
+                                    f"Select instance to explain ({model_name}):", 
+                                    0, 
+                                    len(X_test_enc)-1, 
+                                    min(0, len(X_test_enc)-1)
+                                )
+                                
+                                # Generate explanation with error handling
+                                try:
+                                    exp = explainer.explain_instance(
+                                        X_test_enc.iloc[instance_idx].values, 
+                                        models[model_name].predict_proba
+                                    )
+                                    st.write(exp.as_list())
+                                    st.markdown("LIME shows which features were most important for this specific prediction, helping understand individual cases.")
+                                except Exception as lime_exp_error:
+                                    st.warning(f"⚠️ Could not generate LIME explanation: {str(lime_exp_error)}")
+                            else:
+                                st.warning("No test data available for LIME explanation")
+                        except Exception as lime_error:
+                            st.warning(f"⚠️ Error initializing LIME for {model_name}: {str(lime_error)}")
+                    else:
+                        st.info(f"{model_name} doesn't support prediction probabilities required for LIME analysis.")
+                except Exception as e:
+                    st.error(f"⚠️ Error in LIME analysis for {model_name}: {str(e)}")
+                    st.code(traceback.format_exc())
 
     # --- MODEL DEPLOYMENT PREPARATION ---
     st.subheader("Step 9: Model Deployment Preparation")
