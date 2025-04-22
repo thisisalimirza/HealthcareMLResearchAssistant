@@ -78,14 +78,47 @@ def add_tooltip(label, tooltip_key):
 def get_accurate_unique_count(series):
     """Get accurate unique value count regardless of data type"""
     try:
-        # Convert to string first to handle all types
-        return series.astype(str).nunique()
-    except:
-        # Fallback to standard nunique if conversion fails
-        try:
-            return series.nunique()
-        except:
+        # Handle empty series
+        if len(series) == 0:
             return 0
+            
+        # First check for pandas categorical type
+        if pd.api.types.is_categorical_dtype(series):
+            return len(series.cat.categories)
+            
+        # For object types (strings, mixed), clean and normalize before counting
+        if series.dtype == 'object':
+            # Convert to string, strip whitespace, and normalize case
+            cleaned = series.astype(str).str.strip()
+            # Count unique non-null values
+            return cleaned.replace('', np.nan).replace('nan', np.nan).dropna().nunique()
+            
+        # For numeric types, use standard nunique but handle NaN values properly
+        elif pd.api.types.is_numeric_dtype(series):
+            return series.dropna().nunique()
+            
+        # For datetime types
+        elif pd.api.types.is_datetime64_dtype(series):
+            return series.dropna().nunique()
+            
+        # For all other types, convert to string with careful handling
+        else:
+            # Convert to string but handle special cases
+            return series.astype(str).replace('', np.nan).replace('nan', np.nan).replace('None', np.nan).dropna().nunique()
+            
+    except Exception as e:
+        # Print error for debugging but continue execution
+        st.warning(f"Error calculating unique values: {str(e)}")
+        # Fallback methods
+        try:
+            # Try using Python's built-in set
+            return len(set([str(x) for x in series.dropna().values]))
+        except:
+            try:
+                # Last resort - try numpy's unique
+                return len(np.unique(series.dropna().values))
+            except:
+                return 0
 
 st.set_page_config(page_title="ML Research Dashboard", layout="wide")
 st.title("🧪 Machine Learning Research Assistant")
@@ -618,14 +651,47 @@ if train_file and test_file:
         def get_accurate_unique_count(series):
             """Get accurate unique value count regardless of data type"""
             try:
-                # Convert to string first to handle all types
-                return series.astype(str).nunique()
-            except:
-                # Fallback to standard nunique if conversion fails
-                try:
-                    return series.nunique()
-                except:
+                # Handle empty series
+                if len(series) == 0:
                     return 0
+                    
+                # First check for pandas categorical type
+                if pd.api.types.is_categorical_dtype(series):
+                    return len(series.cat.categories)
+                    
+                # For object types (strings, mixed), clean and normalize before counting
+                if series.dtype == 'object':
+                    # Convert to string, strip whitespace, and normalize case
+                    cleaned = series.astype(str).str.strip()
+                    # Count unique non-null values
+                    return cleaned.replace('', np.nan).replace('nan', np.nan).dropna().nunique()
+                    
+                # For numeric types, use standard nunique but handle NaN values properly
+                elif pd.api.types.is_numeric_dtype(series):
+                    return series.dropna().nunique()
+                    
+                # For datetime types
+                elif pd.api.types.is_datetime64_dtype(series):
+                    return series.dropna().nunique()
+                    
+                # For all other types, convert to string with careful handling
+                else:
+                    # Convert to string but handle special cases
+                    return series.astype(str).replace('', np.nan).replace('nan', np.nan).replace('None', np.nan).dropna().nunique()
+                    
+            except Exception as e:
+                # Print error for debugging but continue execution
+                st.warning(f"Error calculating unique values: {str(e)}")
+                # Fallback methods
+                try:
+                    # Try using Python's built-in set
+                    return len(set([str(x) for x in series.dropna().values]))
+                except:
+                    try:
+                        # Last resort - try numpy's unique
+                        return len(np.unique(series.dropna().values))
+                    except:
+                        return 0
         
         # Auto-fix data types with clear messaging
         st.info("🔍 Automatically checking data types and fixing issues...")
