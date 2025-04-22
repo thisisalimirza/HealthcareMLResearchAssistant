@@ -616,19 +616,6 @@ def auto_fix_data_types(df, target_col=None, verbose=True):
     
     return df_fixed, issues_fixed
 
-# --- DATA UPLOAD ---
-st.subheader("Step 1: Upload Your Datasets")
-train_file = st.file_uploader("Upload Training Set (CSV)", type="csv")
-test_file = st.file_uploader("Upload Validation/Test Set (CSV)", type="csv")
-
-# --- MODE SELECTION ---
-st.subheader("Step 2: Choose Task Type")
-task_type = st.radio(
-    add_tooltip("Is this a classification or regression task?", "task_type"),
-    ["Classification", "Regression"]
-)
-is_classification = task_type == "Classification"
-
 # --- CUSTOM CSV READER FUNCTION ---
 def read_csv_robust(file):
     """Read CSV file with robust handling of categorical columns and encoding issues"""
@@ -668,15 +655,11 @@ def read_csv_robust(file):
                 df[col].attrs['unique_count'] = len(unique_values)
                 df[col].attrs['sample_values'] = [str(x) for x in df[col].dropna().head(5).tolist()]
                 
-                # Try to detect if numeric
-                try:
-                    if df[col].dtypes == 'object':
-                        # Check if column can be converted to numeric
-                        pd.to_numeric(df[col], errors='raise')
-                        df[col] = pd.to_numeric(df[col], errors='coerce')
-                except:
-                    # Keep as object type if conversion fails
-                    pass
+                # IMPORTANT: Don't automatically convert to numeric here
+                # Just detect if it's likely numeric for metadata
+                df[col].attrs['likely_numeric'] = all(
+                    pd.to_numeric(df[col].dropna().head(10), errors='coerce').notna()
+                ) if not df[col].empty else False
             
             st.success(f"✅ Successfully loaded data with encoding: {encoding}")
             return df
@@ -687,6 +670,19 @@ def read_csv_robust(file):
     # If all encodings fail
     st.error("❌ Failed to read CSV file with any encoding. Please check the file format.")
     return None
+
+# --- DATA UPLOAD ---
+st.subheader("Step 1: Upload Your Datasets")
+train_file = st.file_uploader("Upload Training Set (CSV)", type="csv")
+test_file = st.file_uploader("Upload Validation/Test Set (CSV)", type="csv")
+
+# --- MODE SELECTION ---
+st.subheader("Step 2: Choose Task Type")
+task_type = st.radio(
+    add_tooltip("Is this a classification or regression task?", "task_type"),
+    ["Classification", "Regression"]
+)
+is_classification = task_type == "Classification"
 
 # --- AUTO PROFILING ---
 if train_file:
@@ -755,22 +751,6 @@ if train_file and test_file:
                     sample_vals = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
                     st.write(f"**{col}**: {unique_count} unique values | Sample: {sample_vals}")
         
-        # Auto-fix data types with clear messaging
-        st.info("🔍 Automatically checking data types and fixing issues...")
-        df_train, train_issues = auto_fix_data_types(df_train)
-        df_test, test_issues = auto_fix_data_types(df_test)
-        
-        # Report any fixes made
-        if train_issues or test_issues:
-            issues_text = []
-            if train_issues:
-                issues_text.append(f"Training set: {', '.join([f'{col} ({count} values)' for col, count in train_issues.items()])}")
-            if test_issues:
-                issues_text.append(f"Test set: {', '.join([f'{col} ({count} values)' for col, count in test_issues.items()])}")
-                
-            st.success("✅ Data type issues were automatically fixed in: " + "; ".join(issues_text))
-            st.info("Non-numeric values were converted to missing values and will be handled by your missing value strategy.")
-        
         # Data Overview
         st.subheader("Step 3: Data Overview and Feature Selection")
         
@@ -800,25 +780,11 @@ if train_file and test_file:
             missing_count = df_train[col].isnull().sum()
             
             # Auto-detect type with more robust logic
-            if pd.api.types.is_numeric_dtype(df_train[col]):
-                # Check if it's actually numeric or just appears numeric
-                # Try converting strings to numeric to see if it works
-                try:
-                    pd.to_numeric(df_train[col])
-                    is_true_numeric = True
-                except:
-                    is_true_numeric = False
-                    
-                if is_true_numeric and unique_count <= 10:
+            if hasattr(df_train[col], 'attrs') and 'likely_numeric' in df_train[col].attrs and df_train[col].attrs['likely_numeric']:
+                if unique_count <= 10:
                     suggested_type = "Categorical (Numeric)"
-                elif is_true_numeric:
-                    suggested_type = "Continuous"
                 else:
-                    # It looked numeric but isn't truly numeric
-                    if unique_count <= 15:
-                        suggested_type = "Categorical (String)"
-                    else:
-                        suggested_type = "Text"
+                    suggested_type = "Continuous"
             else:
                 if unique_count <= 15:
                     suggested_type = "Categorical (String)"
@@ -1166,6 +1132,98 @@ if train_file and test_file:
 
         X_train_enc = X_train
         X_test_enc = X_test
+
+        # After user has confirmed column types, apply the selected types
+        st.markdown("#### Apply Column Types and Preprocessing")
+        if st.button("Apply Column Types and Continue"):
+            # Process columns according to user selections
+            st.info("🛠️ Preprocessing data based on your column type selections...")
+            
+            # Create a copy of the dataframes to apply transformations
+            df_train_processed = df_train.copy()
+            df_test_processed = df_test.copy()
+            
+            # Process each column by its confirmed type
+            convert_log = []
+            
+            # Process all features by their confirmed types
+            for col_name, col_info in column_types.items():
+                if "confirmed_type" not in col_info:
+                    # Skip columns that weren't included by the user
+                    continue
+                    
+                col_type = col_info["confirmed_type"]
+                
+                # Handle different column types
+                if col_type == "Continuous":
+                    # Convert to numeric, tracking conversion issues
+                    non_null_before = df_train_processed[col_name].count()
+                    df_train_processed[col_name] = pd.to_numeric(df_train_processed[col_name], errors='coerce')
+                    df_test_processed[col_name] = pd.to_numeric(df_test_processed[col_name], errors='coerce')
+                    non_null_after = df_train_processed[col_name].count()
+                    nan_converted = non_null_before - non_null_after
+                    
+                    if nan_converted > 0:
+                        convert_log.append(f"{col_name}: {nan_converted} non-numeric values converted to NaN")
+                    
+                elif col_type == "Categorical (Numeric)":
+                    # Convert to numeric categories
+                    df_train_processed[col_name] = pd.to_numeric(df_train_processed[col_name], errors='coerce')
+                    df_test_processed[col_name] = pd.to_numeric(df_test_processed[col_name], errors='coerce')
+                    
+                    # Track conversion issues
+                    nan_converted = df_train_processed[col_name].isna().sum() - df_train[col_name].isna().sum()
+                    if nan_converted > 0:
+                        convert_log.append(f"{col_name}: {nan_converted} non-numeric values converted to NaN")
+                
+                elif col_type == "Categorical (String)":
+                    # Ensure categorical strings are properly handled
+                    # Convert to string category to preserve non-numeric categories
+                    df_train_processed[col_name] = df_train_processed[col_name].astype(str)
+                    df_test_processed[col_name] = df_test_processed[col_name].astype(str)
+                    
+                    # Handle 'nan' strings that might be created
+                    df_train_processed.loc[df_train_processed[col_name] == 'nan', col_name] = np.nan
+                    df_test_processed.loc[df_test_processed[col_name] == 'nan', col_name] = np.nan
+                
+                elif col_type == "Target":
+                    # Special handling for target column based on selected target type
+                    if col_info["target_type"] == "Categorical":
+                        # For classification tasks - preserve categorical values
+                        df_train_processed[col_name] = df_train_processed[col_name].astype(str)
+                        df_test_processed[col_name] = df_test_processed[col_name].astype(str)
+                        
+                        # Handle 'nan' strings
+                        df_train_processed.loc[df_train_processed[col_name] == 'nan', col_name] = np.nan
+                        df_test_processed.loc[df_test_processed[col_name] == 'nan', col_name] = np.nan
+                    else:
+                        # For regression tasks - convert to numeric
+                        non_null_before = df_train_processed[col_name].count()
+                        df_train_processed[col_name] = pd.to_numeric(df_train_processed[col_name], errors='coerce')
+                        df_test_processed[col_name] = pd.to_numeric(df_test_processed[col_name], errors='coerce')
+                        non_null_after = df_train_processed[col_name].count()
+                        nan_converted = non_null_before - non_null_after
+                        
+                        if nan_converted > 0:
+                            convert_log.append(f"{target} (Target): {nan_converted} non-numeric values converted to NaN")
+            
+            # Report conversion issues
+            if convert_log:
+                st.warning("⚠️ Some values were converted to NaN during type conversion:")
+                for log in convert_log:
+                    st.write(f"- {log}")
+            
+            # Update the dataframes for further processing
+            df_train = df_train_processed
+            df_test = df_test_processed
+            
+            st.success("✅ Column types applied successfully!")
+            
+            # Show sample of processed data
+            st.markdown("#### Processed Data Sample")
+            st.dataframe(df_train.head(5))
+            
+            # Continue with the rest of the workflow...
 
     except Exception as e:
         st.error(f"❌ Error processing data: {e}")
