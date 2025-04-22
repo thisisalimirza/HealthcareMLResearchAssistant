@@ -867,90 +867,113 @@ if train_file and test_file:
                 if not hasattr(preprocess_data, 'scalers'):
                     preprocess_data.scalers = {}
                 
-                for col in cont_features:
-                    # Create a unique key for each column and scaling method
-                    scaler_key = f"{preprocessing_options['continuous_scaling']}_{col}"
-                    
-                    if preprocessing_options['continuous_scaling'] == "Standard Scaling":
-                        if is_train:
-                            preprocess_data.scalers[scaler_key] = StandardScaler()
-                            df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(df_processed[[col]])
-                        else:
-                            if scaler_key in preprocess_data.scalers:
-                                df_processed[col] = preprocess_data.scalers[scaler_key].transform(df_processed[[col]])
-                    elif preprocessing_options['continuous_scaling'] == "Min-Max Scaling":
-                        if is_train:
-                            preprocess_data.scalers[scaler_key] = MinMaxScaler()
-                            df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(df_processed[[col]])
-                        else:
-                            if scaler_key in preprocess_data.scalers:
-                                df_processed[col] = preprocess_data.scalers[scaler_key].transform(df_processed[[col]])
-                    elif preprocessing_options['continuous_scaling'] == "Robust Scaling":
-                        if is_train:
-                            preprocess_data.scalers[scaler_key] = RobustScaler()
-                            df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(df_processed[[col]])
-                        else:
-                            if scaler_key in preprocess_data.scalers:
-                                df_processed[col] = preprocess_data.scalers[scaler_key].transform(df_processed[[col]])
+                # Skip scaling if there are no continuous features
+                if not cont_features:
+                    if is_train:
+                        st.warning("⚠️ Standard Scaling was selected but no continuous features were found. Scaling will be skipped.")
+                else:
+                    for col in cont_features:
+                        # Create a unique key for each column and scaling method
+                        scaler_key = f"{preprocessing_options['continuous_scaling']}_{col}"
+                        
+                        # Handle empty arrays by adding safety check
+                        # Skip scaling if column is empty or all values are NaN
+                        if df_processed[col].dropna().empty:
+                            st.warning(f"⚠️ Cannot scale column '{col}' because it has no valid values after preprocessing.")
+                            continue
+                        
+                        if preprocessing_options['continuous_scaling'] == "Standard Scaling":
+                            if is_train:
+                                preprocess_data.scalers[scaler_key] = StandardScaler()
+                                # Reshape to handle 1D arrays properly
+                                values = df_processed[col].values.reshape(-1, 1)
+                                df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(values).flatten()
+                            else:
+                                if scaler_key in preprocess_data.scalers:
+                                    values = df_processed[col].values.reshape(-1, 1)
+                                    df_processed[col] = preprocess_data.scalers[scaler_key].transform(values).flatten()
+                        elif preprocessing_options['continuous_scaling'] == "Min-Max Scaling":
+                            if is_train:
+                                preprocess_data.scalers[scaler_key] = MinMaxScaler()
+                                values = df_processed[col].values.reshape(-1, 1)
+                                df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(values).flatten()
+                            else:
+                                if scaler_key in preprocess_data.scalers:
+                                    values = df_processed[col].values.reshape(-1, 1)
+                                    df_processed[col] = preprocess_data.scalers[scaler_key].transform(values).flatten()
+                        elif preprocessing_options['continuous_scaling'] == "Robust Scaling":
+                            if is_train:
+                                preprocess_data.scalers[scaler_key] = RobustScaler()
+                                values = df_processed[col].values.reshape(-1, 1)
+                                df_processed[col] = preprocess_data.scalers[scaler_key].fit_transform(values).flatten()
+                            else:
+                                if scaler_key in preprocess_data.scalers:
+                                    values = df_processed[col].values.reshape(-1, 1)
+                                    df_processed[col] = preprocess_data.scalers[scaler_key].transform(values).flatten()
 
             # Handle categorical features
             if 'categorical_encoding' in preprocessing_options:
-                rare_categories_dict = {}  # Store rare categories for each column
-                
-                for col in cat_features:
-                    # Handle rare categories first
-                    if preprocessing_options['handle_rare'] != "None":
-                        if is_train:
-                            value_counts = df_processed[col].value_counts(normalize=True)
-                            threshold = 0.01 if preprocessing_options['handle_rare'] == "Group rare (<1%)" else 0.05
-                            rare_categories_dict[col] = value_counts[value_counts < threshold].index.tolist()
-                        
-                        # Replace rare categories with "Other"
-                        if col in rare_categories_dict:
-                            df_processed[col] = df_processed[col].apply(
-                                lambda x: "Other" if x in rare_categories_dict[col] else x
-                            )
+                # Skip encoding if there are no categorical features
+                if not cat_features:
+                    if is_train:
+                        st.warning("⚠️ Categorical encoding was selected but no categorical features were found. Encoding will be skipped.")
+                else:
+                    rare_categories_dict = {}  # Store rare categories for each column
+                    
+                    for col in cat_features:
+                        # Handle rare categories first
+                        if preprocessing_options['handle_rare'] != "None":
+                            if is_train:
+                                value_counts = df_processed[col].value_counts(normalize=True)
+                                threshold = 0.01 if preprocessing_options['handle_rare'] == "Group rare (<1%)" else 0.05
+                                rare_categories_dict[col] = value_counts[value_counts < threshold].index.tolist()
+                            
+                            # Replace rare categories with "Other"
+                            if col in rare_categories_dict:
+                                df_processed[col] = df_processed[col].apply(
+                                    lambda x: "Other" if x in rare_categories_dict[col] else x
+                                )
 
-                    # Handle encoding
-                    if preprocessing_options['categorical_encoding'] == "One-Hot Encoding":
-                        if is_train:
-                            # Get dummy variables
-                            dummies = pd.get_dummies(df_processed[col], prefix=col)
-                            # Store column names for later use
-                            if not hasattr(preprocess_data, 'dummy_columns'):
-                                preprocess_data.dummy_columns = {}
-                            preprocess_data.dummy_columns[col] = dummies.columns.tolist()
-                            df_processed = pd.concat([df_processed.drop(col, axis=1), dummies], axis=1)
-                        else:
-                            # Create dummies using only the columns from training
-                            dummies = pd.get_dummies(df_processed[col], prefix=col)
-                            # Add missing columns from training
-                            for dummy_col in preprocess_data.dummy_columns[col]:
-                                if dummy_col not in dummies.columns:
-                                    dummies[dummy_col] = 0
-                            # Remove extra columns not in training
-                            dummies = dummies[preprocess_data.dummy_columns[col]]
-                            df_processed = pd.concat([df_processed.drop(col, axis=1), dummies], axis=1)
-                    
-                    elif preprocessing_options['categorical_encoding'] == "Label Encoding":
-                        if is_train:
-                            if not hasattr(preprocess_data, 'label_encoders'):
-                                preprocess_data.label_encoders = {}
-                            preprocess_data.label_encoders[col] = LabelEncoder()
-                            df_processed[col] = preprocess_data.label_encoders[col].fit_transform(df_processed[col])
-                        else:
-                            # Handle unseen categories by adding them to the encoder
-                            if not set(df_processed[col].unique()).issubset(set(preprocess_data.label_encoders[col].classes_)):
-                                new_categories = set(df_processed[col].unique()) - set(preprocess_data.label_encoders[col].classes_)
-                                df_processed[col] = df_processed[col].replace(list(new_categories), preprocess_data.label_encoders[col].classes_[0])
-                            df_processed[col] = preprocess_data.label_encoders[col].transform(df_processed[col])
-                    
-                    elif preprocessing_options['categorical_encoding'] == "Target Encoding" and is_train:
-                        if not hasattr(preprocess_data, 'target_encodings'):
-                            preprocess_data.target_encodings = {}
-                        target_mean = df_processed.groupby(col)[target].mean()
-                        preprocess_data.target_encodings[col] = target_mean
-                        df_processed[col] = df_processed[col].map(target_mean)
+                        # Handle encoding
+                        if preprocessing_options['categorical_encoding'] == "One-Hot Encoding":
+                            if is_train:
+                                # Get dummy variables
+                                dummies = pd.get_dummies(df_processed[col], prefix=col)
+                                # Store column names for later use
+                                if not hasattr(preprocess_data, 'dummy_columns'):
+                                    preprocess_data.dummy_columns = {}
+                                preprocess_data.dummy_columns[col] = dummies.columns.tolist()
+                                df_processed = pd.concat([df_processed.drop(col, axis=1), dummies], axis=1)
+                            else:
+                                # Create dummies using only the columns from training
+                                dummies = pd.get_dummies(df_processed[col], prefix=col)
+                                # Add missing columns from training
+                                for dummy_col in preprocess_data.dummy_columns[col]:
+                                    if dummy_col not in dummies.columns:
+                                        dummies[dummy_col] = 0
+                                # Remove extra columns not in training
+                                dummies = dummies[preprocess_data.dummy_columns[col]]
+                                df_processed = pd.concat([df_processed.drop(col, axis=1), dummies], axis=1)
+                        
+                        elif preprocessing_options['categorical_encoding'] == "Label Encoding":
+                            if is_train:
+                                if not hasattr(preprocess_data, 'label_encoders'):
+                                    preprocess_data.label_encoders = {}
+                                preprocess_data.label_encoders[col] = LabelEncoder()
+                                df_processed[col] = preprocess_data.label_encoders[col].fit_transform(df_processed[col])
+                            else:
+                                # Handle unseen categories by adding them to the encoder
+                                if not set(df_processed[col].unique()).issubset(set(preprocess_data.label_encoders[col].classes_)):
+                                    new_categories = set(df_processed[col].unique()) - set(preprocess_data.label_encoders[col].classes_)
+                                    df_processed[col] = df_processed[col].replace(list(new_categories), preprocess_data.label_encoders[col].classes_[0])
+                                df_processed[col] = preprocess_data.label_encoders[col].transform(df_processed[col])
+                        
+                        elif preprocessing_options['categorical_encoding'] == "Target Encoding" and is_train:
+                            if not hasattr(preprocess_data, 'target_encodings'):
+                                preprocess_data.target_encodings = {}
+                            target_mean = df_processed.groupby(col)[target].mean()
+                            preprocess_data.target_encodings[col] = target_mean
+                            df_processed[col] = df_processed[col].map(target_mean)
 
             return df_processed
 
