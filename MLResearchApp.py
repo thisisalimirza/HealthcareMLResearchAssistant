@@ -723,7 +723,7 @@ if train_file and test_file:
             if not numeric_cols:
                 st.info("No numeric features detected in your dataset.")
             else:
-                st.write(f"Found {len(numeric_cols)} numeric features:")
+                st.write(f"Found {len(numeric_cols)} features detected as numeric:")
                 num_selected = []
                 
                 for col in numeric_cols:
@@ -731,11 +731,16 @@ if train_file and test_file:
                     with col1:
                         include = st.checkbox(f"Include {col}", value=True)
                     with col2:
-                        st.write(f"{column_types[col]['unique_count']} unique values")
+                        # Show actual values from the column to help user decide
+                        sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
+                        st.write(f"Sample: {sample_values}")
+                        actual_unique = df_train[col].nunique()
+                        st.write(f"Unique values: {actual_unique}")
                     with col3:
+                        # Allow selecting any type
                         feat_type = st.selectbox(
                             f"Type for {col}",
-                            ["Continuous", "Categorical (Numeric)"],
+                            ["Continuous", "Categorical (Numeric)", "Categorical (String)", "Text"],
                             index=0 if column_types[col]['suggested_type'] == "Continuous" else 1,
                             key=f"type_{col}"
                         )
@@ -743,18 +748,23 @@ if train_file and test_file:
                     if include:
                         num_selected.append(col)
                         column_types[col]["confirmed_type"] = feat_type
+                        # Add to the appropriate group based on selected type
                         if feat_type == "Continuous":
                             column_groups["Continuous"].append(col)
-                        else:
+                        elif feat_type == "Categorical (Numeric)":
                             column_groups["Categorical (Numeric)"].append(col)
+                        elif feat_type == "Categorical (String)":
+                            column_groups["Categorical (String)"].append(col)
+                        elif feat_type == "Text":
+                            column_groups["Text"].append(col)
                 
-                st.success(f"Selected {len(num_selected)} numeric features")
+                st.success(f"Selected {len(num_selected)} features from this tab")
         
         with feature_tabs[1]:  # Categorical Features tab
             if not categorical_cols:
                 st.info("No categorical features detected in your dataset.")
             else:
-                st.write(f"Found {len(categorical_cols)} categorical features:")
+                st.write(f"Found {len(categorical_cols)} features detected as categorical:")
                 cat_selected = []
                 
                 for col in categorical_cols:
@@ -762,11 +772,16 @@ if train_file and test_file:
                     with col1:
                         include = st.checkbox(f"Include {col}", value=True)
                     with col2:
-                        st.write(f"{column_types[col]['unique_count']} unique values")
+                        # Show actual values from the column to help user decide
+                        sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
+                        st.write(f"Sample: {sample_values}")
+                        actual_unique = df_train[col].nunique()
+                        st.write(f"Unique values: {actual_unique}")
                     with col3:
+                        # Allow selecting any type
                         feat_type = st.selectbox(
                             f"Type for {col}",
-                            ["Categorical (String)"],
+                            ["Categorical (String)", "Categorical (Numeric)", "Continuous", "Text"],
                             index=0,
                             key=f"type_{col}"
                         )
@@ -774,15 +789,23 @@ if train_file and test_file:
                     if include:
                         cat_selected.append(col)
                         column_types[col]["confirmed_type"] = feat_type
-                        column_groups["Categorical (String)"].append(col)
+                        # Add to the appropriate group based on selected type
+                        if feat_type == "Continuous":
+                            column_groups["Continuous"].append(col)
+                        elif feat_type == "Categorical (Numeric)":
+                            column_groups["Categorical (Numeric)"].append(col)
+                        elif feat_type == "Categorical (String)":
+                            column_groups["Categorical (String)"].append(col)
+                        elif feat_type == "Text":
+                            column_groups["Text"].append(col)
                 
-                st.success(f"Selected {len(cat_selected)} categorical features")
+                st.success(f"Selected {len(cat_selected)} features from this tab")
         
         with feature_tabs[2]:  # Text Features tab
             if not text_cols:
                 st.info("No text features detected in your dataset.")
             else:
-                st.write(f"Found {len(text_cols)} text features:")
+                st.write(f"Found {len(text_cols)} features detected as text:")
                 text_selected = []
                 
                 for col in text_cols:
@@ -790,11 +813,16 @@ if train_file and test_file:
                     with col1:
                         include = st.checkbox(f"Include {col}", value=True)
                     with col2:
-                        st.write(f"{column_types[col]['unique_count']} unique values")
+                        # Show actual values from the column to help user decide
+                        sample_values = ", ".join([str(x) for x in df_train[col].dropna().head(3).tolist()])
+                        st.write(f"Sample: {sample_values}")
+                        actual_unique = df_train[col].nunique()
+                        st.write(f"Unique values: {actual_unique}")
                     with col3:
+                        # Allow selecting any type
                         feat_type = st.selectbox(
                             f"Type for {col}",
-                            ["Text", "Categorical (String)"],
+                            ["Text", "Categorical (String)", "Categorical (Numeric)", "Continuous"],
                             index=0,
                             key=f"type_{col}"
                         )
@@ -802,14 +830,19 @@ if train_file and test_file:
                     if include:
                         text_selected.append(col)
                         column_types[col]["confirmed_type"] = feat_type
-                        if feat_type == "Text":
-                            column_groups["Text"].append(col)
-                        else:
+                        # Add to the appropriate group based on selected type
+                        if feat_type == "Continuous":
+                            column_groups["Continuous"].append(col)
+                        elif feat_type == "Categorical (Numeric)":
+                            column_groups["Categorical (Numeric)"].append(col)
+                        elif feat_type == "Categorical (String)":
                             column_groups["Categorical (String)"].append(col)
+                        elif feat_type == "Text":
+                            column_groups["Text"].append(col)
                 
-                st.success(f"Selected {len(text_selected)} text features")
+                st.success(f"Selected {len(text_selected)} features from this tab")
         
-        with feature_tabs[3]:  # All Features tab
+        with feature_tabs[3]:  # All Features tab (moved to position 5)
             st.write("Summary of all features:")
             
             # Display target column
